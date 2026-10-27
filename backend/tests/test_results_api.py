@@ -116,7 +116,7 @@ class ValidationResultsApiTests(unittest.TestCase):
         self.customers = FakeCollection([
             {
                 "run_id": "run-1", "row_number": 2, "customer_id": "SYN-C-1",
-                "dp_id": "DP-1", "source_values": {
+                "dp_id": "DP-1", "search_terms_normalized": ["sync1", "syn", "c", "1", "dp1", "dp", "synthetic", "street", "syntheticstreet", "0710000000"], "source_values": {
                     "address": "Synthetic street", "phone_number": "0710000000",
                     "reported_province": "Synthetic province",
                 },
@@ -127,7 +127,7 @@ class ValidationResultsApiTests(unittest.TestCase):
             },
             {
                 "run_id": "run-1", "row_number": 3, "customer_id": "SYN-C-2",
-                "dp_id": "DP-1", "source_values": {"address": "Other synthetic street"},
+                "dp_id": "DP-1", "search_terms_normalized": ["sync2", "syn", "c", "2", "dp1", "dp", "other", "synthetic", "street", "othersyntheticstreet"], "source_values": {"address": "Other synthetic street"},
                 "customer_location": None, "dp_location_observed": {"lat": 6.91, "lon": 79.81},
                 "issue_codes": ["COORD_MISSING"], "findings": [],
                 "has_hard_error": True, "eligible_for_dp_assessment": False,
