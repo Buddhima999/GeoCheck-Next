@@ -20,8 +20,10 @@ NOT_APPLICABLE = "NOT_APPLICABLE"
 @dataclass(frozen=True)
 class ValidationSettings:
     customer_dp_limit_m: float = 500.0
-    # No line-distance maximum is applied until the provider approves a threshold.
-    max_line_distance_m: float | None = None
+    # The requested customer/line threshold is 500 m; override only with provider approval.
+    max_line_distance_m: float | None = 500.0
+    distance_method: str = "straight_line"
+    address_match_tolerance_m: float = 500.0
     overhead_distance_tolerance_m: float = 25.0
     # Provider confirmed overhead_distance_m is straight-line customer-to-DP distance.
     overhead_distance_is_straight_line: bool = True
@@ -69,6 +71,8 @@ def validate_row(
     phone_area_check: Callable[[str, float, float], bool | None] | None = None,
     address_zone_check: Callable[[str, float, float], bool | None] | None = None,
     geography_check: Callable[[Mapping[str, object], float, float], bool | None] | None = None,
+    route_distance_check: Callable[[float, float, float, float], float | None] | None = None,
+    geocode_address_check: Callable[[str, float, float], float | None] | None = None,
 ) -> dict[str, object]:
     """Validate one mapped source row. Duplicate/conflict checks are cross-row rules."""
     row_number = row.get("row_number")
@@ -77,6 +81,7 @@ def validate_row(
         raise TypeError("mapped row must contain a mapping")
 
     customer_id = str(values.get("customer_id", "") or "").strip()
+    router_number = str(values.get("router_number", values.get("phone_number", "")) or "").strip()
     dp_id = str(values.get("dp_id", "") or "").strip()
     issue_codes: list[str] = []
     checks: dict[str, dict[str, object]] = {}
@@ -93,6 +98,8 @@ def validate_row(
 
     if not customer_id:
         add("CUSTOMER_ID_MISSING", FAIL, "error", "Customer ID is missing.", "customer_id")
+    if not router_number:
+        add("ROUTER_NUMBER_MISSING", FAIL, "error", "Router/service number is missing.", "router_number")
     if not dp_id:
         add("DP_ID_MISSING", UNVERIFIED, "warning", "DP ID is missing; association cannot be checked.", "dp_id")
 
@@ -150,20 +157,39 @@ def validate_row(
 
         address = str(values.get("address", "") or "").strip()
         if not address:
-            checks["address_zone"] = _check(UNVERIFIED, message="No address supplied.")
-            add("ADDRESS_UNVERIFIED", UNVERIFIED, "info", "No address is available for locality-zone verification.", "address")
+            checks["address_zone"] = _check(FAIL, message="Customer address is missing.")
+            add("ADDRESS_MISSING", FAIL, "error", "Customer address is missing.", "address")
+        elif geocode_address_check is not None:
+            # Google Geocoding provides a resolved point. A failed lookup stays unverified;
+            # it must not be mistaken for a confirmed mismatch or a pass.
+            address_distance = geocode_address_check(address, c_lat, c_lon)
+            if address_distance is None:
+                checks["address_zone"] = _check(UNVERIFIED, message="Google could not verify this address within the configured request limit.")
+                add("ADDRESS_UNVERIFIED", UNVERIFIED, "info", "Address could not be matched to a resolved Google Maps location.", "address")
+            else:
+                address_matches = address_distance <= settings.address_match_tolerance_m
+                checks["address_zone"] = _check(
+                    PASS if address_matches else FAIL,
+                    distance_m=address_distance,
+                    message=f"Customer coordinate is {address_distance:.1f} m from the Google-geocoded address point; tolerance is {settings.address_match_tolerance_m:.1f} m.",
+                )
+                if not address_matches:
+                    add("ADDRESS_LOCATION_MISMATCH", FAIL, "warning", "Customer coordinates are too far from the Google-geocoded address point.", "address")
         elif address_zone_check is None:
-            checks["address_zone"] = _check(UNVERIFIED, message="Approved locality zones are not configured.")
+            checks["address_zone"] = _check(UNVERIFIED, message="Google Geocoding is disabled and approved locality zones are not configured.")
+            add("ADDRESS_UNVERIFIED", UNVERIFIED, "info", "Address location cannot be verified without Google Geocoding or approved locality zones.", "address")
         else:
             outcome = address_zone_check(address, c_lat, c_lon)
             checks["address_zone"] = _check(UNVERIFIED if outcome is None else PASS if outcome else FAIL)
-            if outcome is False:
+            if outcome is None:
+                add("ADDRESS_UNVERIFIED", UNVERIFIED, "info", "Address locality could not be resolved using the configured reference data.", "address")
+            elif outcome is False:
                 add("ADDRESS_ZONE_MISMATCH", FAIL, "warning", "Coordinates conflict with the resolved address zone.", "address")
 
         phone = re.sub(r"[^0-9+]", "", str(values.get("phone_number", "") or ""))
         if not phone:
-            checks["phone_area"] = _check(UNVERIFIED, message="No phone number supplied.")
-        elif phone.startswith("07"):
+            checks["phone_area"] = _check(NOT_APPLICABLE, message="Router numbers are not assumed to be geographic telephone numbers.")
+        elif phone.startswith("07") or phone.startswith("+947"):
             checks["phone_area"] = _check(UNVERIFIED, message="Mobile numbers do not establish a town-level location.")
         elif phone_area_check is None:
             checks["phone_area"] = _check(UNVERIFIED, message="Approved LEA/area-code reference is not configured.")
@@ -173,7 +199,11 @@ def validate_row(
             if outcome is False:
                 add("PHONE_AREA_MISMATCH", FAIL, "warning", "Phone area reference conflicts with customer location.", "phone_number")
 
-        if geography_check is None:
+        reported_geography_fields = ("reported_province", "reported_district", "reported_region")
+        has_reported_geography = any(str(values.get(field, "") or "").strip() for field in reported_geography_fields)
+        if not has_reported_geography:
+            checks["reported_geography"] = _check(NOT_APPLICABLE, message="No reported province, district or region was supplied.")
+        elif geography_check is None:
             checks["reported_geography"] = _check(UNVERIFIED, message="Authoritative geography reference is not configured.")
         else:
             outcome = geography_check(values, c_lat, c_lon)
@@ -181,28 +211,74 @@ def validate_row(
             if outcome is False:
                 add("REPORTED_GEOGRAPHY_MISMATCH", FAIL, "warning", "Reported geography conflicts with resolved assignment.")
 
+    direct_distance: float | None = None
     if c_state == "valid" and d_state == "valid":
         assert c_lat is not None and c_lon is not None and d_lat is not None and d_lon is not None
-        distance = haversine_m(c_lat, c_lon, d_lat, d_lon)
-        okay = distance <= settings.customer_dp_limit_m
-        checks["customer_dp_distance"] = _check(PASS if okay else FAIL, distance_m=distance)
-        if not okay:
-            add("CUSTOMER_DP_DISTANCE", FAIL, "warning", f"Customer is {distance:.1f} m from DP; configured limit is {settings.customer_dp_limit_m:.1f} m.")
+        direct_distance = haversine_m(c_lat, c_lon, d_lat, d_lon)
+        direct_okay = direct_distance <= settings.customer_dp_limit_m
+        checks["customer_dp_direct_distance"] = _check(
+            PASS if direct_okay else FAIL,
+            distance_m=direct_distance,
+            message="Direct geographic distance calculated from customer and DP coordinates; not cable-route length.",
+        )
+        if settings.distance_method == "google_routes":
+            route_distance = route_distance_check(c_lat, c_lon, d_lat, d_lon) if route_distance_check else None
+            if route_distance is None:
+                checks["google_route_distance"] = _check(
+                    UNVERIFIED,
+                    message="Google Maps route distance is unavailable (API key, route response or per-run request cap may be responsible).",
+                )
+                checks["customer_dp_distance"] = _check(
+                    UNVERIFIED,
+                    distance_m=direct_distance,
+                    message="Google Routes mode is enabled, but no route distance was returned. The direct distance is shown separately and is not substituted for the route result.",
+                )
+                add("CUSTOMER_DP_ROUTE_UNVERIFIED", UNVERIFIED, "info", "The Google Maps route could not be verified; the 500 m route check was not passed or failed.")
+            else:
+                route_okay = route_distance <= settings.customer_dp_limit_m
+                checks["google_route_distance"] = _check(
+                    PASS if route_okay else FAIL,
+                    distance_m=route_distance,
+                    message="Google Maps driving-road distance; this is not actual overhead cable length.",
+                )
+                checks["customer_dp_distance"] = _check(
+                    PASS if route_okay else FAIL,
+                    distance_m=route_distance,
+                    message=f"Google Maps driving-route distance compared with the {settings.customer_dp_limit_m:.1f} m limit.",
+                )
+                checks["customer_dp_distance"]["method"] = "google_routes"
+                if not route_okay:
+                    add("CUSTOMER_DP_DISTANCE", FAIL, "warning", f"Google Maps route from customer to DP is {route_distance:.1f} m; configured limit is {settings.customer_dp_limit_m:.1f} m.")
+        else:
+            checks["customer_dp_distance"] = _check(
+                PASS if direct_okay else FAIL,
+                distance_m=direct_distance,
+                message=f"Direct coordinate distance compared with the {settings.customer_dp_limit_m:.1f} m limit.",
+            )
+            checks["customer_dp_distance"]["method"] = "straight_line"
+            if not direct_okay:
+                add("CUSTOMER_DP_DISTANCE", FAIL, "warning", f"Customer is {direct_distance:.1f} m from DP; configured limit is {settings.customer_dp_limit_m:.1f} m.")
     else:
+        checks["customer_dp_direct_distance"] = _check(NOT_APPLICABLE, message="Customer or DP coordinates are unusable.")
         checks["customer_dp_distance"] = _check(NOT_APPLICABLE, message="Customer or DP coordinates are unusable.")
+        if settings.distance_method == "google_routes":
+            checks["google_route_distance"] = _check(NOT_APPLICABLE, message="Coordinates are unusable.")
+
+    checks["customer_inside_sri_lanka"] = dict(checks.get("country_boundary", _check(UNVERIFIED)))
 
     line_raw = str(values.get("line_distance_m", "") or "").strip()
     line_distance = as_float(line_raw)
     if not line_raw:
-        checks["line_distance"] = _check(NOT_APPLICABLE, message="No line distance supplied.")
+        checks["line_distance"] = _check(FAIL, message="Reported line distance is missing.")
+        add("LINE_DISTANCE_MISSING", FAIL, "error", "Reported line distance is missing.", "line_distance_m")
     elif line_distance is None or line_distance < 0:
         checks["line_distance"] = _check(FAIL, message="Line distance must be a non-negative finite number.")
         add("LINE_DISTANCE_INVALID", FAIL, "error", "Line distance must be a non-negative finite number.", "line_distance_m")
     elif settings.max_line_distance_m is not None and line_distance > settings.max_line_distance_m:
-        checks["line_distance"] = _check(FAIL, distance_m=line_distance, message="Line distance exceeds configured review threshold.")
+        checks["line_distance"] = _check(FAIL, distance_m=line_distance, message="Reported line distance exceeds the configured 500 m limit.")
         add("LINE_DISTANCE_LIMIT", FAIL, "warning", f"Line distance exceeds {settings.max_line_distance_m:.1f} m.", "line_distance_m")
     else:
-        checks["line_distance"] = _check(PASS, distance_m=line_distance)
+        checks["line_distance"] = _check(PASS, distance_m=line_distance, message="Reported line distance is finite, non-negative and within the configured limit.")
 
     overhead_raw = str(values.get("overhead_distance_m", "") or "").strip()
     overhead_distance = as_float(overhead_raw)
@@ -228,9 +304,27 @@ def validate_row(
     else:
         checks["overhead_distance"] = _check(UNVERIFIED, message="Cannot compare without valid coordinates.")
 
+    overall_status = (
+        FAIL if any(item.get("status") == FAIL for item in findings)
+        else UNVERIFIED if any(
+            checks.get(name, {}).get("status") == UNVERIFIED
+            for name in ("country_boundary", "address_zone", "customer_dp_distance", "line_distance", "overhead_distance")
+        ) or any(item.get("status") == UNVERIFIED for item in findings)
+        else PASS
+    )
+    raw_values = row.get("raw")
+    source_row_values = dict(raw_values) if isinstance(raw_values, Mapping) else dict(values)
+
     return {
         "row_number": row_number,
         "customer_id": customer_id or None,
+        "router_number": router_number or None,
+        "calculated_customer_dp_distance_m": round(direct_distance, 1) if direct_distance is not None else None,
+        "distance_method": settings.distance_method,
+        "customer_inside_sri_lanka": checks.get("country_boundary", {}).get("status", UNVERIFIED),
+        "overall_status": overall_status,
+        "has_fault": overall_status == FAIL,
+        "source_row_values": source_row_values,
         "customer_id_normalized": re.sub(r"\s+", " ", customer_id).casefold() or None,
         "dp_id": dp_id or None,
         "dp_id_normalized": re.sub(r"\s+", " ", dp_id).casefold() or None,
