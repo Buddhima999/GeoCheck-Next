@@ -283,7 +283,14 @@ def validate_row(
     overhead_raw = str(values.get("overhead_distance_m", "") or "").strip()
     overhead_distance = as_float(overhead_raw)
     if not overhead_raw:
-        checks["overhead_distance"] = _check(NOT_APPLICABLE, message="No overhead distance supplied.")
+        if direct_distance is None:
+            checks["overhead_distance"] = _check(NOT_APPLICABLE, message="Cannot calculate overhead distance without valid customer and DP coordinates.")
+        else:
+            checks["overhead_distance"] = _check(
+                PASS,
+                distance_m=direct_distance,
+                message="Calculated overhead distance from customer and DP coordinates using direct geographic distance; this is not a measured cable route.",
+            )
     elif overhead_distance is None or overhead_distance < 0:
         checks["overhead_distance"] = _check(FAIL, message="Overhead distance must be a non-negative finite number.")
         add("OVERHEAD_DISTANCE_INVALID", FAIL, "error", "Overhead distance must be a non-negative finite number.", "overhead_distance_m")
