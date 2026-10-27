@@ -47,7 +47,11 @@ def matches(document, query):
             if "$regex" in expected:
                 import re
                 flags = re.IGNORECASE if expected.get("$options") == "i" else 0
-                if actual is None or re.search(expected["$regex"], str(actual), flags) is None:
+                candidates = actual if isinstance(actual, list) else [actual]
+                if actual is None or not any(
+                    re.search(expected["$regex"], str(candidate), flags) is not None
+                    for candidate in candidates
+                ):
                     return False
             if "$exists" in expected and ((actual is not None) != bool(expected["$exists"])):
                 return False
