@@ -46,6 +46,10 @@ def ensure_indexes() -> None:
         name="run_customer_id",
     )
     customer_records.create_index(
+        [("run_id", ASCENDING), ("search_terms_normalized", ASCENDING)],
+        name="run_customer_search_terms",
+    )
+    customer_records.create_index(
         [("run_id", ASCENDING), ("dp_id_normalized", ASCENDING)],
         name="run_dp_id",
     )
