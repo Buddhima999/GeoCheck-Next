@@ -56,6 +56,7 @@ type CustomerResult = {
   source_values?: Record<string, string>;
   customer_location?: { lat: number; lon: number } | null;
   dp_location_observed?: { lat: number; lon: number } | null;
+  checks?: Record<string, { status: string; distance_m?: number; message?: string }>;
   issue_codes?: string[];
   findings?: Array<{ code: string; severity: string; message: string }>;
   has_hard_error?: boolean;
@@ -114,8 +115,9 @@ function statusClass(status?: string) {
   return (status || "unknown").toLowerCase();
 }
 function StatusBadge({ status }: { status: string }) {
-  const Icon = status === "COMPLETED" ? CheckCircle2 :
-    status === "FAILED" ? XCircle :
+  const Icon = status === "COMPLETED" || status === "PASS" ? CheckCircle2 :
+    status === "FAILED" || status === "FAIL" ? XCircle :
+    status === "CONFLICT" ? AlertTriangle :
     status === "PROCESSING" ? LoaderCircle : Clock3;
   return <span className={`status-badge ${statusClass(status)}`}><Icon size={13} />{status}</span>;
 }
@@ -622,7 +624,7 @@ export default function App() {
           loadingResults ? <div className="loading-state"><LoaderCircle size={19} className="spinning" /> Loading records…</div> :
           resultKind === "customers" ? <>
             <div className="table-scroll"><table><thead><tr><th>Source row</th><th>Customer</th><th>DP</th><th>Reported area</th><th>Distance check</th><th>Findings</th><th>DP assessment</th></tr></thead><tbody>
-              {(customerPage?.items || []).map((item) => <tr key={item.row_number}><td>{item.row_number}</td><td><strong>{item.customer_id || "Missing ID"}</strong><small>{item.source_values?.phone_number || "No phone value"}</small></td><td>{item.dp_id || "—"}</td><td><strong>{item.source_values?.reported_district || item.source_values?.reported_province || "Unreported"}</strong><small>{[item.source_values?.reported_province, item.source_values?.reported_region].filter(Boolean).join(" · ")}</small></td><td><StatusBadge status={item.issue_codes?.includes("CUSTOMER_DP_DISTANCE") ? "FAIL" : item.customer_location && item.dp_location_observed ? "PASS" : "UNVERIFIED"} /></td><td><div className="issue-tags">{item.issue_codes?.length ? item.issue_codes.map((code) => <span key={code} className="issue-tag">{code}</span>) : <span className="muted">No row findings</span>}</div></td><td><StatusBadge status={item.eligible_for_dp_assessment ? "ELIGIBLE" : "UNVERIFIED"} /></td></tr>)}
+              {(customerPage?.items || []).map((item) => <tr key={item.row_number}><td>{item.row_number}</td><td><strong>{item.customer_id || "Missing ID"}</strong><small>{item.source_values?.phone_number || "No phone value"}</small></td><td>{item.dp_id || "—"}</td><td><strong>{item.source_values?.reported_district || item.source_values?.reported_province || "Unreported"}</strong><small>{[item.source_values?.reported_province, item.source_values?.reported_region].filter(Boolean).join(" · ")}</small></td><td><StatusBadge status={item.checks?.customer_dp_distance?.status || "UNVERIFIED"} />{typeof item.checks?.customer_dp_distance?.distance_m === "number" && <small>{item.checks.customer_dp_distance.distance_m.toFixed(1)} m</small>}</td><td><div className="issue-tags">{item.issue_codes?.length ? item.issue_codes.map((code) => <span key={code} className="issue-tag">{code}</span>) : <span className="muted">No row findings</span>}</div></td><td><StatusBadge status={item.eligible_for_dp_assessment ? "ELIGIBLE" : "UNVERIFIED"} /></td></tr>)}
               {!customerPage?.items.length && <tr><td colSpan={7} className="empty-cell">No customer rows match these filters.</td></tr>}
             </tbody></table></div>
             <Pagination total={customerPage?.total || 0} skip={customerPage?.skip || 0} limit={customerPage?.limit || PAGE_SIZE} onChange={(skip) => void loadResults("customers", skip)} />
