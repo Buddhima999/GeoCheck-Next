@@ -89,7 +89,7 @@ class RuleTests(unittest.TestCase):
         self.assertNotIn("CUSTOMER_DP_DISTANCE", result["issue_codes"])
         self.assertEqual(result["checks"]["country_boundary"]["status"], UNVERIFIED)
 
-    def test_reference_checks_are_unverified_if_not_configured(self):
+    def test_country_address_and_reported_geography_references_remain_unverified(self):
         result = validate_row(self.good_row())
         self.assertEqual(result["checks"]["country_boundary"]["status"], UNVERIFIED)
         self.assertEqual(result["checks"]["address_zone"]["status"], UNVERIFIED)
