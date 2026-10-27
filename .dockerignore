@@ -1,0 +1,13 @@
+.git
+**/.venv
+**/venv
+**/__pycache__
+**/*.py[cod]
+**/node_modules
+**/dist
+**/.env
+**/.env.*
+!.env.example
+backend/var
+test-data/generated
+*.csv.gz
