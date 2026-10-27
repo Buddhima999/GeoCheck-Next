@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import csv
+from datetime import datetime, timezone
 import sys
 import tempfile
 import unittest
@@ -11,8 +12,9 @@ from typing import Any
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
-from app.validation.batch_processor import process_csv_file
+from app.validation.batch_processor import _make_dp_updates, process_csv_file
 from app.validation.csv_import import detect_mapping
+from app.validation.rules import ValidationSettings
 
 
 HEADERS = [
@@ -150,6 +152,48 @@ class BatchProcessorTests(unittest.TestCase):
             batch_size=batch_size,
         )
         return result, runs, customers, dps
+
+    def test_dp_upsert_uses_non_conflicting_mongo_update_paths(self):
+        groups = {
+            "dp-a": {
+                "dp_id": "DP-A",
+                "row_count": 2,
+                "valid_locations": [(6.9, 79.85), (7.0, 79.85)],
+                "eligible_customer_rows": 2,
+                "eligible_distance_fail_rows": 1,
+            }
+        }
+        operations, _ = _make_dp_updates(
+            run_id="run-test",
+            groups=groups,
+            existing={},
+            settings=ValidationSettings(),
+            timestamp=datetime.now(timezone.utc),
+        )
+        update = operations[0]._doc
+        path_operators = {}
+        for operator in ("$setOnInsert", "$set", "$addToSet", "$inc"):
+            for path in update.get(operator, {}):
+                self.assertNotIn(path, path_operators, f"{path} appears in multiple update operators")
+                path_operators[path] = operator
+        self.assertEqual(update["$set"]["coordinate_consistency"], "CONFLICT")
+        self.assertIn("issue_codes", update["$addToSet"])
+
+    def test_later_valid_dp_coordinates_fill_an_empty_anchor_without_operator_conflict(self):
+        groups = {"dp-a": {"dp_id": "DP-A", "row_count": 1, "valid_locations": [(6.9, 79.85)], "eligible_customer_rows": 1, "eligible_distance_fail_rows": 0}}
+        existing = {"dp-a": {"run_id": "run-test", "dp_id": "DP-A", "dp_id_normalized": "dp-a", "dp_location_observed": None, "coordinate_consistency": "UNVERIFIED", "coordinate_conflict_observation_count": 0}}
+        operations, _ = _make_dp_updates(
+            run_id="run-test",
+            groups=groups,
+            existing=existing,
+            settings=ValidationSettings(),
+            timestamp=datetime.now(timezone.utc),
+        )
+        update = operations[0]._doc
+        self.assertEqual(update["$set"]["dp_location_observed"], {"lat": 6.9, "lon": 79.85})
+        self.assertEqual(update["$set"]["coordinate_consistency"], "CONSISTENT")
+        self.assertNotIn("dp_location_observed", update["$setOnInsert"])
+        self.assertNotIn("coordinate_consistency", update["$setOnInsert"])
 
     def test_persists_rows_in_bounded_batches_and_completes_run(self):
         rows = [self.make_row(f"C-{index}") for index in range(5)]
