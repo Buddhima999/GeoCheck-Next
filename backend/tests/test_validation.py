@@ -214,7 +214,7 @@ class RuleTests(unittest.TestCase):
 
     def test_google_geocoded_address_distance_is_checked_against_tolerance(self):
         row = self.good_row()
-        row["router_number"] = "ROUTER-001"
+        row["router_number"] = "0112345211"
         result = validate_row(
             row,
             country_check=lambda lat, lon: True,
@@ -225,7 +225,7 @@ class RuleTests(unittest.TestCase):
 
     def test_google_geocoded_address_can_pass_within_tolerance(self):
         row = self.good_row()
-        row["router_number"] = "ROUTER-001"
+        row["router_number"] = "0112345211"
         result = validate_row(
             row,
             country_check=lambda lat, lon: True,
