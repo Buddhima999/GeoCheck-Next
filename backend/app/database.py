@@ -22,7 +22,16 @@ def ping_database() -> None:
 
 
 def ensure_indexes() -> None:
-    """Create a small query-driven index set for the three core collections."""
+    """Create indexes for durable queue claiming and bounded query paths."""
+    validation_runs.create_index(
+        [("run_id", ASCENDING)],
+        unique=True,
+        name="run_id_unique",
+    )
+    validation_runs.create_index(
+        [("status", ASCENDING), ("created_at", ASCENDING)],
+        name="run_queue_created_at",
+    )
     validation_runs.create_index(
         [("status", ASCENDING), ("created_at", DESCENDING)],
         name="run_status_created_at",
