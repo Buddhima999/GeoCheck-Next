@@ -60,7 +60,10 @@ def _customer_search_query(query: str | None) -> dict[str, Any] | None:
     if current:
         tokens.append("".join(current))
     if not compact:
-        return None
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="Search text must contain at least one letter or number.",
+        )
 
     compact_prefix = {"search_terms_normalized": {"$regex": "^" + re.escape(compact)}}
     if len(tokens) <= 1:
