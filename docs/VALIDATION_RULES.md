@@ -25,7 +25,10 @@ The upload profile requires these mapped fields: `customer_id`, `router_number`,
 | `COORD_ZERO_PLACEHOLDER` | Customer / DP observation | Both coordinates zero | Flag placeholder |
 | `COORD_POSSIBLE_SWAP` | Customer / DP observation | Swapped values make geographic sense while originals do not | Warning; never auto-correct |
 | `COUNTRY_BOUNDARY` | Customer | Customer point outside the configured Sri Lanka polygon | Boundary data is a starting asset from the legacy repository; verify source/accuracy before operational use |
-| `PHONE_AREA_MISMATCH` | Customer | Geographic phone area conflicts with location-derived area | Apply approved LEA table; normally a review finding |
+| `ROUTER_NUMBER_FORMAT_INVALID` | Customer | Number is not a 10-digit Sri Lankan fixed-line number | A mobile number is not accepted in this field |
+| `ROUTER_NUMBER_AREA_CODE_UNVERIFIED` | Customer | Ten-digit number prefix is not in the configured geographic landline list | Leave unverified rather than guessing a locality |
+| `PHONE_AREA_MISMATCH` | Customer | Geographic phone area conflicts with address, reported geography or configured coordinate-area reference | Review finding; number area is not exact geolocation |
+| `PHONE_AREA_UNVERIFIED` | Customer | Numbering area is known, but independent location evidence is insufficient | Needs address locality or approved area geometry |
 | `ADDRESS_ZONE_MISMATCH` | Customer | Coordinates outside reliably resolved locality zone | Unverified if locality ambiguous or zone unavailable |
 | `CUSTOMER_DP_DISTANCE` | Customer-DP relationship | Straight-line distance exceeds threshold | Association anomaly; use only eligible customer evidence for DP scoring |
 | `OVERHEAD_DISTANCE_MISMATCH` | Distance field | A supplied overhead-distance value differs beyond approved tolerance from coordinates | Applied when the source CSV includes a reported overhead distance; the 25 m tolerance remains provisional pending approval |
