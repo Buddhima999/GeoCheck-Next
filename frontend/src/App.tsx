@@ -300,6 +300,46 @@ export default function App() {
     [summary],
   );
 
+  const mapMarkers = useMemo<MapMarker[]>(() => {
+    if (resultKind === "customers") {
+      return (customerPage?.items || []).flatMap((item) => {
+        const point = item.customer_location;
+        if (!point || !Number.isFinite(point.lat) || !Number.isFinite(point.lon)) return [];
+        return [{
+          id: "customer-" + String(item.row_number),
+          latitude: point.lat,
+          longitude: point.lon,
+          title: "Customer " + (item.customer_id || String(item.row_number)),
+          detail: "DP: " + (item.dp_id || "Missing") + " · Findings: " + String(item.issue_codes?.length || 0),
+          kind: "customer" as const,
+        }];
+      });
+    }
+    return (dpPage?.items || []).flatMap((item) => {
+      const point = item.dp_location_observed;
+      if (!point || !Number.isFinite(point.lat) || !Number.isFinite(point.lon)) return [];
+      return [{
+        id: "dp-" + item.dp_id,
+        latitude: point.lat,
+        longitude: point.lon,
+        title: "DP " + item.dp_id,
+        detail: "Coordinate state: " + item.coordinate_consistency + " · Customer rows: " + String(item.observed_row_count),
+        kind: "dp" as const,
+      }];
+    });
+  }, [customerPage, dpPage, resultKind]);
+
+  const mapCenter = useMemo<[number, number]>(() => {
+    if (!mapMarkers.length) return [7.8731, 80.7718];
+    return [
+      mapMarkers.reduce((sum, marker) => sum + marker.latitude, 0) / mapMarkers.length,
+      mapMarkers.reduce((sum, marker) => sum + marker.longitude, 0) / mapMarkers.length,
+    ];
+  }, [mapMarkers]);
+
+  const mapTileUrl = import.meta.env.VITE_MAP_TILE_URL ||
+    "https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png";
+
   async function submitUpload(event: FormEvent) {
     event.preventDefault();
     setError("");
@@ -449,6 +489,15 @@ export default function App() {
           <MetricCard label="Rows with findings" value={formatNumber(summary?.rows_with_findings)} note="Issue codes present" icon={AlertTriangle} />
           <MetricCard label="Hard-error rows" value={formatNumber(summary?.rows_with_hard_errors)} note="Requires attention" icon={FileCheck2} />
         </section>
+        <section className="panel reference-panel"><div className="panel-heading"><div><h2>Trusted reference data</h2><p>Checks stay UNVERIFIED when approved boundary or mapping files are missing.</p></div><button className="secondary-button" onClick={() => void loadReferenceStatus()} disabled={!apiKey || loadingReferences}><RefreshCw size={14} className={loadingReferences ? "spinning" : ""} /> Refresh inventory</button></div>
+          <div className="reference-grid">
+            <ReferenceFileCard label="Country boundary" item={referenceStatus?.country_boundary} />
+            <ReferenceFileCard label="Administrative areas" item={referenceStatus?.administrative_areas} />
+            <ReferenceFileCard label="LEA areas" item={referenceStatus?.lea_areas} />
+            <ReferenceFileCard label="Provider regions" item={referenceStatus?.provider_regions} />
+          </div>
+          <div className="panel-footnote"><CircleHelp size={15} /> Add provider-approved files under backend/reference-data and restart the worker. Their SHA-256 digests are stored with each run.</div>
+        </section>
         <section className="content-grid">
           <article className="panel"><div className="panel-heading"><div><h2>Latest validation runs</h2><p>Select a run to view details and results.</p></div><span className="icon-bubble"><Activity size={18} /></span></div>
             {runs.length ? <div className="run-list">{runs.slice(0, 5).map((item) => <button key={item.run_id} className={`run-row ${selectedRunId === item.run_id ? "selected" : ""}`} onClick={() => { selectRun(item); setTab("upload"); }}>
@@ -517,6 +566,21 @@ export default function App() {
           </>}
       </section>}
 
+      {tab === "map" && <section className="panel results-panel">
+        <div className="panel-heading"><div><h2>Customer and DP map</h2><p>Only points from the current results page are drawn; map markers are not a national density estimate.</p></div><span className="icon-bubble"><MapPinned size={18} /></span></div>
+        <div className="toolbar"><label className="field-label">Validation run<select value={selectedRunId} onChange={(event) => { const selected = runs.find((item) => item.run_id === event.target.value); if (selected) selectRun(selected); }}><option value="">Choose a run</option>{runs.map((item) => <option key={item.run_id} value={item.run_id}>{item.original_filename || item.run_id} — {item.status}</option>)}</select></label>
+          <div className="toggle-group"><button className={resultKind === "customers" ? "selected" : ""} onClick={() => void loadResults("customers", 0)}>Customers</button><button className={resultKind === "dps" ? "selected" : ""} onClick={() => void loadResults("dps", 0)}>DPs</button></div>
+          <button className="secondary-button" onClick={() => void loadResults(resultKind, resultSkip)} disabled={!canReadResults || loadingResults}><RefreshCw size={14} /> Refresh map points</button>
+        </div>
+        {!canReadResults ? <div className="empty-state"><div className="empty-icon"><MapPinned size={24} /></div><strong>Select a completed run</strong><span>Map points become available after validation completes.</span></div> :
+          loadingResults ? <div className="loading-state"><LoaderCircle size={19} className="spinning" /> Loading map points…</div> :
+          <><div className="map-legend"><span><i className="map-dot customer-dot" /> Customer points</span><span><i className="map-dot dp-dot" /> DP points</span><span>{mapMarkers.length} mapped point(s) on this page</span></div>
+            {mapMarkers.length ? <MapView key={selectedRunId + "-" + resultKind + "-" + resultSkip} markers={mapMarkers} center={mapCenter} tileUrl={mapTileUrl} /> : <div className="empty-state"><strong>No usable coordinates on this page</strong><span>Change the result page or inspect the coordinate findings.</span></div>}
+            <Pagination total={currentTotal} skip={currentSkip} limit={currentPage?.limit || PAGE_SIZE} onChange={(skip) => void loadResults(resultKind, skip)} />
+          </>}
+        <div className="panel-footnote"><ShieldCheck size={15} /> The default OpenStreetMap tile service receives map viewport requests. Use synthetic data here unless your provider approves that external map service, or configure a company-approved tile server with VITE_MAP_TILE_URL.</div>
+      </section>}
+
       {tab === "hierarchy" && <section className="panel results-panel">
         <div className="panel-heading"><div><h2>Reported geographic hierarchy</h2><p>Grouped from the labels in the uploaded CSV. These are not authoritative province, district or provider-region assignments.</p></div><span className="icon-bubble"><MapPinned size={18} /></span></div>
         <div className="toolbar"><label className="field-label">Validation run<select value={selectedRunId} onChange={(event) => { const selected = runs.find((item) => item.run_id === event.target.value); if (selected) selectRun(selected); }}><option value="">Choose a run</option>{runs.map((item) => <option key={item.run_id} value={item.run_id}>{item.original_filename || item.run_id} — {item.status}</option>)}</select></label><button className="secondary-button" onClick={() => void loadHierarchy(0)} disabled={!canReadResults || loadingHierarchy}><RefreshCw size={14} /> Refresh hierarchy</button></div>
@@ -536,6 +600,14 @@ export default function App() {
 
       <footer className="footer"><span>GeoCheck Next · Local validation workspace</span><span><ShieldCheck size={13} /> Keep real customer data restricted</span></footer>
     </main>
+  </div>;
+}
+
+function ReferenceFileCard({ label, item }: { label: string; item?: ReferenceFileStatus }) {
+  return <div className="reference-card">
+    <div><strong>{label}</strong><StatusBadge status={item?.status || "MISSING"} /></div>
+    <span>{formatNumber(item?.feature_or_mapping_count)} feature/mapping record(s)</span>
+    <small>{item?.sha256 ? "SHA-256 " + item.sha256.slice(0, 12) + "…" : "No approved reference file loaded"}</small>
   </div>;
 }
 
