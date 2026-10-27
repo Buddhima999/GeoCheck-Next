@@ -22,7 +22,7 @@ Missing results must never default to PASS.
 | `PHONE_AREA_MISMATCH` | Customer | Geographic phone area conflicts with location-derived area | Apply approved LEA table; normally a review finding |
 | `ADDRESS_ZONE_MISMATCH` | Customer | Coordinates outside reliably resolved locality zone | Unverified if locality ambiguous or zone unavailable |
 | `CUSTOMER_DP_DISTANCE` | Customer-DP relationship | Straight-line distance exceeds threshold | Association anomaly; use only eligible customer evidence for DP scoring |
-| `OVERHEAD_DISTANCE_MISMATCH` | Distance field | Reported overhead distance differs beyond approved tolerance | Disabled by default until provider confirms the field is intended to equal straight-line distance; unit and tolerance need confirmation |
+| `OVERHEAD_DISTANCE_MISMATCH` | Distance field | Reported straight-line customer-to-DP distance differs beyond approved tolerance from coordinates | Enabled by default; provider confirmed the semantics. The 25 m tolerance remains provisional pending approval |
 | `LINE_DISTANCE_INVALID` | Distance field | Non-numeric, negative or invalid value | Invalid line distance must never pass merely because it is below threshold |
 | `DP_COORD_CONFLICT` | DP | Same normalized DP ID has materially different coordinate observations | Report groups/rows; never choose a winner automatically |
 | `CUSTOMER_ID_CONFLICT` | Source row/customer | Same normalized customer ID has incompatible source records | Preserve each row |
