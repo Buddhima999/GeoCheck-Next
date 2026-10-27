@@ -1,6 +1,6 @@
 # Phase 0 — Data Contract
 
-This proposal is not a claim about the provider's exact CSV columns. Final mapping must be confirmed against a sanitized sample of the real file.
+The synthetic sample's 13 headers are now confirmed as the initial logical CSV contract. They match the current automatic header mapper. The actual production export still needs a sanitized-header check before a real import.
 
 ## Expected logical fields
 
@@ -12,8 +12,8 @@ This proposal is not a claim about the provider's exact CSV columns. Final mappi
 | Customer latitude/longitude | Customer spatial validation | Required for coordinate checks |
 | DP ID | DP association checks | Normalize for grouping without losing original value |
 | DP latitude/longitude | Distance checks | May come from source rows or an authoritative DP master |
-| Line distance | Line-distance rules | Optional; units/meaning require confirmation |
-| Overhead distance | Measurement comparison | Optional; units/meaning require confirmation |
+| `line_distance_m` | Line-distance rules | Optional; user confirmed the unit is metres. No maximum threshold is configured until the provider approves one. |
+| `overhead_distance_m` | Measurement validation | Optional; the column name suffix suggests metres but its business meaning is not confirmed. Do not compare with straight-line distance until confirmed. |
 
 ## Data concepts
 
@@ -41,7 +41,7 @@ Every run identifies its source file hash, filename, column mapping, import/vali
 1. A sanitized 20–50-row example using actual CSV headers. Include examples of missing values, duplicate/conflicting IDs, coordinate conflicts and distances if available. Replace personal data and precise coordinates with synthetic equivalents while preserving structure.
 2. Provider's official DP/region mapping.
 3. Approved LEA/telephone-area reference table and the number types to which it applies.
-4. Meaning and units of line/overhead distance values.
+4. `line_distance_m` is confirmed in metres. The meaning of `overhead_distance_m` and whether it represents straight-line or cable-route length still need confirmation.
 5. Duplicate-customer policy and source-of-truth DP coordinates.
 6. DP association threshold, minimum eligible-customer count and required pass rate.
 7. Deployment mode: multiple authenticated users sharing MongoDB-backed runs is the initial design.
