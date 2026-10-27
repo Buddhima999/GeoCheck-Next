@@ -27,7 +27,7 @@ _REQUIRED_REGION_COLUMNS = {"province", "district", "region"}
 
 
 def _word_tokens(value: object) -> tuple[str, ...]:
-    return tuple(re.findall(r"[^\\W_]+", str(value or "").casefold(), flags=re.UNICODE))
+    return tuple(re.findall(r"[^\W_]+", str(value or "").casefold(), flags=re.UNICODE))
 
 
 def _normalize_label(value: object) -> str:
