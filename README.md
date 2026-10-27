@@ -7,14 +7,14 @@ Scalable customer and distribution-point (DP/FDP) location data-quality applicat
 - Frontend: React + TypeScript + Vite
 - API: Python + FastAPI
 - Database: MongoDB
-- Processing: bounded-batch validation service implemented; upload/queue/restart recovery are not implemented yet
-- Core collections: `validation_runs`, `customer_records`, `dp_records`
+- Processing: streaming CSV upload, MongoDB-backed queue and separate bounded-batch worker
+- Core collections: validation_runs, customer_records, dp_records
 - Reference data: versioned local GIS/LEA/provider-region files
 
 ## Safety and correctness rules
 
 1. Preserve source rows; never silently discard duplicates or conflicting records.
-2. Distinguish `PASS`, `FAIL`, `UNVERIFIED`, and `NOT_APPLICABLE`.
+2. Distinguish PASS, FAIL, UNVERIFIED, and NOT_APPLICABLE.
 3. Do not treat customer errors alone as proof that a DP is wrong.
 4. Do not store an unbounded customer array in a DP document.
 5. Process in bounded batches and paginate large result sets.
@@ -24,64 +24,94 @@ Scalable customer and distribution-point (DP/FDP) location data-quality applicat
 
 ## Run locally
 
-### Backend
+### Backend API
 
-```bash
+~~~bash
 cd backend
 python -m venv .venv
 # Windows: .venv\\Scripts\\activate
 # macOS/Linux: source .venv/bin/activate
 pip install -r requirements.txt
-# Copy .env.example to .env and configure MONGO_URI
+# Copy .env.example to .env, then edit it and set a unique GEOCHECK_API_KEY.
 uvicorn app.main:app --reload --host 127.0.0.1 --port 8000
-```
+~~~
+
+The API uses MongoDB and creates its indexes during startup. /api/health checks database connectivity. CSV upload and run-status endpoints fail closed with HTTP 503 until GEOCHECK_API_KEY is configured.
+
+### Background worker
+
+Open a second terminal and run this from the backend directory, using the same .env file:
+
+~~~bash
+python -m app.worker
+~~~
+
+The worker claims queued runs atomically from MongoDB, checks the full CSV before writing validation records, then processes rows in bounded batches. Run only one worker process for this MVP. The API and worker must share the same persistent UPLOAD_DIR; in containers, mount the same persistent volume at that location in both services.
+
+### Upload and check a run
+
+After setting GEOCHECK_API_KEY to your own secret in backend/.env, submit a CSV:
+
+~~~bash
+curl.exe -H "X-API-Key: YOUR_SECRET" -F "file=@C:\\path\\customers.csv" http://127.0.0.1:8000/api/validation-runs
+~~~
+
+The response contains a run_id and poll_url. Check progress:
+
+~~~bash
+curl.exe -H "X-API-Key: YOUR_SECRET" http://127.0.0.1:8000/api/validation-runs/YOUR_RUN_ID
+~~~
+
+The upload endpoint accepts CSV files only. Default limits are 512 MiB and 1,000,000 source rows; override them via MAX_UPLOAD_BYTES and MAX_CSV_ROWS. Automatic column detection requires customer latitude/longitude and DP latitude/longitude. To supply a custom mapping, pass column_mapping as a JSON form field containing logical-field-to-header mappings.
+
+The API key is a basic shared-secret gate for development, not full identity-level authentication. Do not expose these endpoints publicly or upload real customer data until identity/access controls, transport security, storage security, retention/deletion rules, and operational monitoring have been reviewed.
 
 ### Frontend
 
-```bash
+~~~bash
 cd frontend
 npm install
 npm run dev
-```
+~~~
 
-Vite proxies `/api` calls to `http://127.0.0.1:8000` during development.
+Vite proxies /api calls to http://127.0.0.1:8000 during development. The current frontend remains a scaffold; it does not yet provide the complete upload, mapping, hierarchy, map, and export experience.
 
 ### Backend unit tests
 
 From the repository root:
 
-```powershell
+~~~powershell
 python -m unittest discover -s backend/tests -p "test_*.py" -v
-```
+~~~
 
-The same test command runs automatically in GitHub Actions for pushes to main and feature branches and for pull requests targeting main.
+The same test command runs automatically in GitHub Actions for pushes to main and feature branches and for pull requests targeting main. Tests use synthetic fixtures and in-memory collection fakes; they are not a live MongoDB integration or performance test.
 
-### Bounded-batch processing service
+## Queue and failure behavior
 
-The backend now includes `app.validation.batch_processor.process_csv_file(...)`. It reads rows as a stream, validates them in bounded batches, writes customer outcomes to `customer_records`, rolls up DP consistency/counts into `dp_records`, and updates run progress in `validation_runs`. It expects the caller to create the run record and supply a CSV file path plus the detected column mapping. Upload endpoints, durable queueing, and restart/resume handling are not yet implemented.
+The queue is persisted in validation_runs, so queued work survives API and worker process restarts as long as MongoDB and the shared upload volume persist. The worker preflights CSV syntax and row/field limits before processing. A run that stops reporting progress for WORKER_STALE_AFTER_SECONDS (default 900 seconds) is marked failed, partial records are left attached to that failed run, and the stored upload is removed. Automatic resume is not implemented because replaying partially written batches is not yet idempotent; upload the source CSV again as a new run. Do not manually change a failed run back to queued.
 
-### Generate synthetic test data
+## Generate synthetic test data
 
 From the repository root, generate a small 50-row fixture:
 
-```powershell
+~~~powershell
 python test-data/generate_synthetic_csv.py
-```
+~~~
 
 Generate a scale fixture for the planned load test:
 
-```powershell
+~~~powershell
 python test-data/generate_synthetic_csv.py --rows 600000 --dp-count 150000
-```
+~~~
 
-Generated files are written to `test-data/generated/` and ignored by Git because scale fixtures may be large. The coordinates, addresses and identifiers are synthetic. They must never be treated as a trusted Sri Lankan boundary, town, LEA or provider-region reference.
+Generated files are written to test-data/generated/ and ignored by Git because scale fixtures may be large. The coordinates, addresses and identifiers are synthetic. They must never be treated as a trusted Sri Lankan boundary, town, LEA or provider-region reference.
 
 ## Phase 0 inputs still required
 
 - Sanitized sample of the actual CSV with real headers (remove names, phone numbers and precise customer coordinates; preserve data types and issue patterns).
 - Provider's official operational-region mapping.
 - Approved telephone-area/LEA reference table.
-- Approved tolerance for `overhead_distance_m` comparison (its meaning is confirmed as straight-line customer-to-DP distance; the current 25 m tolerance is provisional).
+- Approved tolerance for overhead_distance_m comparison (its meaning is confirmed as straight-line customer-to-DP distance; the current 25 m tolerance is provisional).
 - Agreed DP association thresholds and duplicate-ID policy.
 
-See `docs/PHASE_0_DATA_CONTRACT.md`, `docs/VALIDATION_RULES.md` and `backend/tests/README.md`.
+See docs/PHASE_0_DATA_CONTRACT.md, docs/VALIDATION_RULES.md, docs/BATCH_PROCESSING_DESIGN.md and docs/UPLOAD_AND_WORKER.md.
