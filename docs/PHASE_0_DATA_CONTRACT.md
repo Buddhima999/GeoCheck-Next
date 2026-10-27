@@ -24,6 +24,8 @@ The importer normalizes header capitalization, punctuation and spacing. It recog
 - `distance_500m_status`: result for the configured distance rule. In the default `straight_line` mode it matches the direct-coordinate threshold; with optional `google_routes` mode it is the route-distance threshold. The direct overhead threshold is reported separately in both modes.
 - `customer_inside_sri_lanka`: `PASS`, `FAIL`, or `UNVERIFIED` based on the configured country polygon and valid customer coordinates.
 - `address_match_status`: outcome of Google Geocoding (if enabled) or an approved locality-zone reference. It remains unverified when no suitable source is available.
+- `router_number_format_status`, `router_number_area_code`, and `router_number_area`: format validation and inferred numbering area for the fixed-line number.
+- `phone_area_status`: whether the inferred telephone numbering area is consistent with address/locality labels or a configured coordinate-to-area reference. Text-only consistency is not exact geolocation.
 - `overall_status`, `issue_codes`, and `findings`: row-level fault summary and traceable rule explanations.
 
 ## Status semantics
