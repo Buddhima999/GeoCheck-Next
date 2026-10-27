@@ -40,6 +40,37 @@ def utc_now() -> datetime:
     return datetime.now(timezone.utc)
 
 
+def _search_terms_normalized(result: Mapping[str, Any]) -> list[str]:
+    """Index normalized ID, phone and address terms for predictable-prefix searching."""
+    source_values = result.get("source_values", {})
+    if not isinstance(source_values, Mapping):
+        source_values = {}
+    values = (
+        result.get("customer_id"),
+        result.get("dp_id"),
+        source_values.get("phone_number"),
+        source_values.get("address"),
+    )
+    terms: set[str] = set()
+    for value in values:
+        text = str(value or "").casefold().strip()
+        if not text:
+            continue
+        compact = "".join(character for character in text if character.isalnum())
+        if compact:
+            terms.add(compact)
+        token: list[str] = []
+        for character in text:
+            if character.isalnum():
+                token.append(character)
+            elif token:
+                terms.add("".join(token))
+                token = []
+        if token:
+            terms.add("".join(token))
+    return sorted(terms)
+
+
 def eligible_for_dp_assessment(result: Mapping[str, Any]) -> bool:
     """Whether this row's customer location can be used for DP association scoring."""
     location = result.get("customer_location")
@@ -310,6 +341,7 @@ def process_csv_file(
                             "dp_id": result.get("dp_id"),
                             "dp_id_normalized": result.get("dp_id_normalized"),
                             "source_values": result.get("source_values", {}),
+                            "search_terms_normalized": _search_terms_normalized(result),
                             "customer_location": result.get("customer_location"),
                             "dp_location_observed": result.get("dp_location_observed"),
                             "checks": result.get("checks", {}),
