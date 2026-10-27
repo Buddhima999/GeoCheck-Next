@@ -93,8 +93,52 @@ class RuleTests(unittest.TestCase):
         result = validate_row(self.good_row())
         self.assertEqual(result["checks"]["country_boundary"]["status"], UNVERIFIED)
         self.assertEqual(result["checks"]["address_zone"]["status"], UNVERIFIED)
-        self.assertEqual(result["checks"]["phone_area"]["status"], UNVERIFIED)
+        # The landline prefix and address text provide a plausibility match,
+        # but no country/address geocoder is configured.
+        self.assertEqual(result["checks"]["phone_area"]["status"], PASS)
+        self.assertEqual(result["checks"]["phone_area"]["area_code"], "011")
+        self.assertEqual(result["checks"]["phone_area"]["area_name"], "Colombo")
         self.assertEqual(result["checks"]["reported_geography"]["status"], UNVERIFIED)
+
+    def test_landline_number_infers_area_and_accepts_international_format(self):
+        row = self.good_row()
+        row["router_number"] = "+94 81 234 5211"
+        row["address"] = "Synthetic Road, Kandy"
+        row["reported_district"] = "Kandy"
+        row["reported_province"] = "Central"
+        result = validate_row(row)
+        self.assertEqual(result["checks"]["router_number_format"]["status"], PASS)
+        self.assertEqual(result["checks"]["router_number_format"]["normalized_number"], "0812345211")
+        self.assertEqual(result["checks"]["router_number_format"]["area_code"], "081")
+        self.assertEqual(result["checks"]["router_number_format"]["area_name"], "Kandy")
+        self.assertEqual(result["checks"]["phone_area"]["status"], PASS)
+        self.assertNotIn("PHONE_AREA_MISMATCH", result["issue_codes"])
+
+    def test_landline_area_mismatch_is_flagged_against_address_and_reported_area(self):
+        row = self.good_row()
+        row["router_number"] = "0112345211"
+        row["address"] = "Synthetic Road, Kandy"
+        row["reported_district"] = "Kandy"
+        row["reported_province"] = "Central"
+        result = validate_row(row)
+        self.assertEqual(result["checks"]["router_number_format"]["status"], PASS)
+        self.assertEqual(result["checks"]["phone_area"]["status"], FAIL)
+        self.assertIn("PHONE_AREA_MISMATCH", result["issue_codes"])
+
+    def test_landline_field_rejects_non_landline_number_format(self):
+        row = self.good_row()
+        row["router_number"] = "0771234567"
+        result = validate_row(row)
+        self.assertEqual(result["checks"]["router_number_format"]["status"], FAIL)
+        self.assertIn("ROUTER_NUMBER_FORMAT_INVALID", result["issue_codes"])
+        self.assertEqual(result["checks"]["phone_area"]["status"], NOT_APPLICABLE)
+
+    def test_unknown_or_reserved_area_code_remains_unverified(self):
+        row = self.good_row()
+        row["router_number"] = "0122345211"
+        result = validate_row(row)
+        self.assertEqual(result["checks"]["router_number_format"]["status"], UNVERIFIED)
+        self.assertIn("ROUTER_NUMBER_AREA_CODE_UNVERIFIED", result["issue_codes"])
 
     def test_distance_and_negative_line_distance(self):
         row = self.good_row()
@@ -141,7 +185,7 @@ class RuleTests(unittest.TestCase):
 
     def test_google_routes_distance_is_used_for_the_500m_rule_when_configured(self):
         row = self.good_row()
-        row["router_number"] = "ROUTER-001"
+        row["router_number"] = "0112345211"
         result = validate_row(
             row,
             settings=ValidationSettings(distance_method="google_routes", max_line_distance_m=None),
