@@ -6,12 +6,12 @@ The customer audit upload expects one CSV row per customer with the following ma
 
 ```csv
 customer_id,router_number,customer_latitude,customer_longitude,cust_address,dp_id,dp_latitude,dp_longitude,line_distance_m
-CUST-001,RT-001,6.9272,79.8613,"Example Road, Colombo",DP-001,6.9271,79.8612,120
+CUST-001,0112345211,6.9272,79.8613,"Example Road, Colombo",DP-001,6.9271,79.8612,120
 ```
 
 The example values are illustrative only; do not use them as provider data. Headers are matched case-insensitively with punctuation/space normalization and aliases such as `cust_address` → `address`. If your source uses `phone_number` instead of `router_number`, it can be mapped as a legacy alternative.
 
-The router/service number is treated as an opaque identifier, not automatically as a phone number. The application cannot prove that it is active or assigned to the given customer without an authorized provider lookup.
+`router_number` means the customer's fixed-line telephone number, for example `0112345211`; `phone_number` remains accepted as a legacy CSV header. GeoCheck checks the 10-digit Sri Lankan landline format and infers a numbering area from the TRCSL-published prefix list (for example, `011` → Colombo and `081` → Kandy). It compares this inferred area with known locality words in the address, reported district/province and any configured area reference. The check is a consistency warning, not a reverse lookup: a prefix cannot identify the exact house, coordinates, active subscriber, or current location. Exact customer lookup requires an authorized provider subscriber/address system.
 
 ## Main rules
 

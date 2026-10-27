@@ -7,14 +7,14 @@ The current upload profile is the nine-field provider CSV contract below. The ac
 | Source header / logical field | Required | Validation purpose |
 |---|---:|---|
 | `customer_id` | Yes | Preserve source value; detect conflicting records for the same normalized ID |
-| `router_number` | Yes | Preserve and check presence of the router/service identifier; treated as opaque unless the provider specifies its meaning |
+| `router_number` | Yes | Customer fixed-line telephone number; validate Sri Lankan 10-digit format and infer a numbering area from its area code. This does not identify exact coordinates or subscriber ownership |
 | `customer_latitude` / `customer_longitude` | Yes | Validate numeric geographic coordinates, placeholders, possible swaps and country-boundary membership |
 | `cust_address` (logical `address`) | Yes | Compare the geocoded/reference location with the uploaded customer coordinate where a trusted lookup is available |
 | `dp_id` | Yes | Preserve original value and normalize only for grouping |
 | `dp_latitude` / `dp_longitude` | Yes | Check coordinate validity, repeated-DP consistency and distance to customer |
 | `line_distance_m` | Yes | Validate that the value is finite, numeric and non-negative; no cable-length maximum is assumed without provider approval |
 
-The importer normalizes header capitalization, punctuation and spacing. It recognizes `cust_address` as `address`, and common aliases for coordinates and router/service number. A legacy `phone_number` column can substitute for `router_number` if it is the source's actual field. This does not make the router identifier a phone number.
+The importer normalizes header capitalization, punctuation and spacing. It recognizes `cust_address` as `address`, and common aliases for coordinates and telephone number. A legacy `phone_number` column can substitute for `router_number` if it is the source's actual fixed-line telephone field.
 
 ## Calculated outputs
 
@@ -24,6 +24,8 @@ The importer normalizes header capitalization, punctuation and spacing. It recog
 - `distance_500m_status`: result for the configured distance rule. In the default `straight_line` mode it matches the direct-coordinate threshold; with optional `google_routes` mode it is the route-distance threshold. The direct overhead threshold is reported separately in both modes.
 - `customer_inside_sri_lanka`: `PASS`, `FAIL`, or `UNVERIFIED` based on the configured country polygon and valid customer coordinates.
 - `address_match_status`: outcome of Google Geocoding (if enabled) or an approved locality-zone reference. It remains unverified when no suitable source is available.
+- `router_number_format_status`, `router_number_area_code`, and `router_number_area`: format validation and inferred numbering area for the fixed-line number.
+- `phone_area_status`: whether the inferred telephone numbering area is consistent with address/locality labels or a configured coordinate-to-area reference. Text-only consistency is not exact geolocation.
 - `overall_status`, `issue_codes`, and `findings`: row-level fault summary and traceable rule explanations.
 
 ## Status semantics
@@ -43,8 +45,8 @@ Google Routes / Geocoding are optional, use backend-only API credentials, and ha
 
 ## Still to confirm with the provider
 
-1. The official source of truth for customer IDs, router numbers and DP IDs.
-2. Whether `router_number` is a hardware serial, a service identifier, or a telephone number.
+1. The official source of truth for customer IDs, fixed-line numbers and DP IDs.
+2. Confirm that the uploaded `router_number` is the customer's fixed-line number and that Sri Lankan geographic area-code validation is appropriate for every row.
 3. The required measurement semantics for `line_distance_m`; cable lengths must not be forced to equal Haversine or road-route distance.
 4. Whether Google Maps route distance is needed as an additional check, and an approved request budget for the expected dataset size.
 5. The official administrative area / LEA / provider-region mappings, if geographic number and locality checks are needed.

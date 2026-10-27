@@ -13,7 +13,7 @@ Missing results must never default to PASS.
 
 The upload profile requires these mapped fields: `customer_id`, `router_number`, `customer_latitude`, `customer_longitude`, `cust_address` (mapped to logical `address`), `dp_id`, `dp_latitude`, `dp_longitude`, and `line_distance_m`. Header matching ignores punctuation/case and accepts common aliases. The legacy `phone_number` field can substitute for `router_number` when present. Missing required columns are rejected during upload; invalid row values become findings in the report.
 
-`router_number` is treated as an opaque service/router identifier. The application does not assume it is a geographic telephone number or invent a format/area-code rule. Missing values are faults. Telephone-area validation only runs when a distinct `phone_number` is mapped and an approved LEA reference dataset is configured.
+`router_number` is the customer's Sri Lankan fixed-line telephone number (legacy `phone_number` is accepted as an alternative). The validator checks the number format, parses domestic `0XX XXX XXXX` and international `+94 XX XXX XXXX` forms, and uses the TRCSL-published geographic area-code list to infer a numbering area. For example, `0112345211` maps to the Colombo numbering area. The inferred area is compared with locality text in `address` and the supplied district/province, and with an optional configured coordinate-to-area reference. A mismatch is a review finding; incomplete evidence remains `UNVERIFIED`. Area codes do not reveal exact house coordinates, prove subscriber ownership, or establish the customer's current location. See the [TRCSL numbering resources](https://www.trc.gov.lk/pages_e.php?id=121) and [published numbering manual](https://www.trc.gov.lk/content/files/policy/numberingmanual.pdf).
 
 ## Proposed rule catalogue
 
@@ -25,7 +25,10 @@ The upload profile requires these mapped fields: `customer_id`, `router_number`,
 | `COORD_ZERO_PLACEHOLDER` | Customer / DP observation | Both coordinates zero | Flag placeholder |
 | `COORD_POSSIBLE_SWAP` | Customer / DP observation | Swapped values make geographic sense while originals do not | Warning; never auto-correct |
 | `COUNTRY_BOUNDARY` | Customer | Customer point outside the configured Sri Lanka polygon | Boundary data is a starting asset from the legacy repository; verify source/accuracy before operational use |
-| `PHONE_AREA_MISMATCH` | Customer | Geographic phone area conflicts with location-derived area | Apply approved LEA table; normally a review finding |
+| `ROUTER_NUMBER_FORMAT_INVALID` | Customer | Number is not a 10-digit Sri Lankan fixed-line number | A mobile number is not accepted in this field |
+| `ROUTER_NUMBER_AREA_CODE_UNVERIFIED` | Customer | Ten-digit number prefix is not in the configured geographic landline list | Leave unverified rather than guessing a locality |
+| `PHONE_AREA_MISMATCH` | Customer | Geographic phone area conflicts with address, reported geography or configured coordinate-area reference | Review finding; number area is not exact geolocation |
+| `PHONE_AREA_UNVERIFIED` | Customer | Numbering area is known, but independent location evidence is insufficient | Needs address locality or approved area geometry |
 | `ADDRESS_ZONE_MISMATCH` | Customer | Coordinates outside reliably resolved locality zone | Unverified if locality ambiguous or zone unavailable |
 | `CUSTOMER_DP_DISTANCE` | Customer-DP relationship | Straight-line distance exceeds threshold | Association anomaly; use only eligible customer evidence for DP scoring |
 | `OVERHEAD_DISTANCE_MISMATCH` | Distance field | A supplied overhead-distance value differs beyond approved tolerance from coordinates | Applied when the source CSV includes a reported overhead distance; the 25 m tolerance remains provisional pending approval |

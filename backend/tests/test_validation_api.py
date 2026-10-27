@@ -34,7 +34,7 @@ class FakeCollection:
 
 CSV_BYTES = (
     b"customer_id,router_number,customer_latitude,customer_longitude,cust_address,dp_id,dp_latitude,dp_longitude,line_distance_m\n"
-    b"SYNTHETIC-C-1,ROUTER-001,6.9,79.8,Synthetic road,DP-1,6.91,79.81,120\n"
+    b"SYNTHETIC-C-1,0112345211,6.9,79.8,Synthetic road,DP-1,6.91,79.81,120\n"
 )
 
 
