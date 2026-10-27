@@ -81,7 +81,7 @@ def validate_row(
         raise TypeError("mapped row must contain a mapping")
 
     customer_id = str(values.get("customer_id", "") or "").strip()
-    router_number = str(values.get("router_number", values.get("phone_number", "")) or "").strip()
+    router_number = str(values.get("router_number") or values.get("phone_number") or "").strip()
     dp_id = str(values.get("dp_id", "") or "").strip()
     issue_codes: list[str] = []
     checks: dict[str, dict[str, object]] = {}
@@ -153,7 +153,7 @@ def validate_row(
             outcome = country_check(c_lat, c_lon)
             checks["country_boundary"] = _check(UNVERIFIED if outcome is None else PASS if outcome else FAIL)
             if outcome is False:
-                add("COUNTRY_BOUNDARY", FAIL, "error", "Customer point is outside the accepted geographic boundary.", "customer_latitude")
+                add("COUNTRY_BOUNDARY", FAIL, "error", "Customer point is outside the configured Sri Lanka boundary.", "customer_latitude")
 
         address = str(values.get("address", "") or "").strip()
         if not address:
@@ -275,10 +275,10 @@ def validate_row(
         checks["line_distance"] = _check(FAIL, message="Line distance must be a non-negative finite number.")
         add("LINE_DISTANCE_INVALID", FAIL, "error", "Line distance must be a non-negative finite number.", "line_distance_m")
     elif settings.max_line_distance_m is not None and line_distance > settings.max_line_distance_m:
-        checks["line_distance"] = _check(FAIL, distance_m=line_distance, message="Reported line distance exceeds the configured 500 m limit.")
-        add("LINE_DISTANCE_LIMIT", FAIL, "warning", f"Line distance exceeds {settings.max_line_distance_m:.1f} m.", "line_distance_m")
+        checks["line_distance"] = _check(FAIL, distance_m=line_distance, message="Reported line distance exceeds the configured review threshold.")
+        add("LINE_DISTANCE_LIMIT", FAIL, "warning", f"Line distance exceeds the configured review threshold of {settings.max_line_distance_m:.1f} m.", "line_distance_m")
     else:
-        checks["line_distance"] = _check(PASS, distance_m=line_distance, message="Reported line distance is finite, non-negative and within the configured limit.")
+        checks["line_distance"] = _check(PASS, distance_m=line_distance, message="Reported line distance is finite and non-negative. No cable-length maximum is assumed.")
 
     overhead_raw = str(values.get("overhead_distance_m", "") or "").strip()
     overhead_distance = as_float(overhead_raw)
