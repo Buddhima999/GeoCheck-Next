@@ -114,6 +114,17 @@ class RuleTests(unittest.TestCase):
         self.assertEqual(result["checks"]["phone_area"]["status"], PASS)
         self.assertNotIn("PHONE_AREA_MISMATCH", result["issue_codes"])
 
+    def test_ambiguous_road_name_does_not_confirm_landline_area(self):
+        row = self.good_row()
+        row["router_number"] = "0112345211"
+        row["address"] = "No. 25 Kandy Road, Colombo"
+        row["reported_district"] = ""
+        row["reported_province"] = ""
+        result = validate_row(row)
+        self.assertEqual(result["checks"]["router_number_format"]["status"], PASS)
+        self.assertEqual(result["checks"]["phone_area"]["status"], UNVERIFIED)
+        self.assertNotIn("PHONE_AREA_MISMATCH", result["issue_codes"])
+
     def test_landline_area_mismatch_is_flagged_against_address_and_reported_area(self):
         row = self.good_row()
         row["router_number"] = "0112345211"
