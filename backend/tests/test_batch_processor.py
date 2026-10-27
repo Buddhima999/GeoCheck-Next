@@ -43,7 +43,7 @@ class FakeCollection:
                 if actual not in value["$in"]:
                     return False
             elif isinstance(value, dict) and "$ne" in value:
-                if actual == value["$ne"]:
+                if actual == value["$ne"] or (isinstance(actual, list) and value["$ne"] in actual):
                     return False
             elif actual != value:
                 return False
