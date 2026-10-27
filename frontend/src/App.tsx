@@ -71,7 +71,7 @@ type CustomerResult = {
   has_fault?: boolean;
   customer_location?: { lat: number; lon: number } | null;
   dp_location_observed?: { lat: number; lon: number } | null;
-  checks?: Record<string, { status: string; distance_m?: number; message?: string }>;
+  checks?: Record<string, { status: string; distance_m?: number; message?: string; method?: string }>;
   issue_codes?: string[];
   findings?: Array<{ code: string; severity: string; message: string }>;
   has_hard_error?: boolean;
