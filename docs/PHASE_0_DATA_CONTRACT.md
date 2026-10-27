@@ -45,8 +45,8 @@ Google Routes / Geocoding are optional, use backend-only API credentials, and ha
 
 ## Still to confirm with the provider
 
-1. The official source of truth for customer IDs, router numbers and DP IDs.
-2. Whether `router_number` is a hardware serial, a service identifier, or a telephone number.
+1. The official source of truth for customer IDs, fixed-line numbers and DP IDs.
+2. Confirm that the uploaded `router_number` is the customer's fixed-line number and that Sri Lankan geographic area-code validation is appropriate for every row.
 3. The required measurement semantics for `line_distance_m`; cable lengths must not be forced to equal Haversine or road-route distance.
 4. Whether Google Maps route distance is needed as an additional check, and an approved request budget for the expected dataset size.
 5. The official administrative area / LEA / provider-region mappings, if geographic number and locality checks are needed.
