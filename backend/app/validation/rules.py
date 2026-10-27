@@ -406,11 +406,7 @@ def validate_row(
         elif len(address_codes) > 1:
             # Road names and locality names can overlap (for example, "Kandy
             # Road, Colombo"). Ambiguous address text must not confirm an area.
-            message = (
-                "Address text contains more than one recognised telephone-area place name; "
-                "it is not reliable enough on its own to confirm the landline area."
-            )
-            checks["phone_area"] = _check(UNVERIFIED, message=message)
+            pass
         if reported_district:
             if reported_district == area_district:
                 matching_evidence.append(f"reported district matches {area_district}")
