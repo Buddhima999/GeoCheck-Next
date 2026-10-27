@@ -47,3 +47,8 @@ jobs:
         env:
           GEOCHECK_TEST_MONGO_URI: mongodb://127.0.0.1:27017
         run: python -m unittest discover -s backend/tests -p "test_mongodb_integration.py" -v
+
+      - name: Smoke-test synthetic benchmark with MongoDB
+        env:
+          GEOCHECK_BENCH_MONGO_URI: mongodb://127.0.0.1:27017
+        run: python backend/scripts/benchmark_validation.py --rows 1000 --dp-count 250 --batch-size 100
