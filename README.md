@@ -56,7 +56,11 @@ python -m unittest discover -s backend/tests -p "test_*.py" -v
 
 The same test command runs automatically in GitHub Actions for pushes to main and feature branches and for pull requests targeting main.
 
-### Bounded-batch processing service\n\nThe backend now includes `app.validation.batch_processor.process_csv_file(...)`. It reads rows as a stream, validates them in bounded batches, writes customer outcomes to `customer_records`, rolls up DP consistency/counts into `dp_records`, and updates run progress in `validation_runs`. It expects the caller to create the run record and supply a CSV file path plus the detected column mapping. Upload endpoints, durable queueing, and restart/resume handling are not yet implemented.\n\n### Generate synthetic test data
+### Bounded-batch processing service
+
+The backend now includes `app.validation.batch_processor.process_csv_file(...)`. It reads rows as a stream, validates them in bounded batches, writes customer outcomes to `customer_records`, rolls up DP consistency/counts into `dp_records`, and updates run progress in `validation_runs`. It expects the caller to create the run record and supply a CSV file path plus the detected column mapping. Upload endpoints, durable queueing, and restart/resume handling are not yet implemented.
+
+### Generate synthetic test data
 
 From the repository root, generate a small 50-row fixture:
 
