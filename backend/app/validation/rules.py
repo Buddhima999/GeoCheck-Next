@@ -395,7 +395,7 @@ def validate_row(
 
         contradictory_evidence: list[str] = []
         matching_evidence: list[str] = []
-        if address_codes:
+        if len(address_codes) == 1:
             if area_code in address_codes:
                 matching_evidence.append(f"address text mentions {area_name}")
             else:
@@ -403,6 +403,14 @@ def validate_row(
                 contradictory_evidence.append(
                     f"address text mentions {', '.join(mentioned_areas)}, not {area_name}"
                 )
+        elif len(address_codes) > 1:
+            # Road names and locality names can overlap (for example, "Kandy
+            # Road, Colombo"). Ambiguous address text must not confirm an area.
+            message = (
+                "Address text contains more than one recognised telephone-area place name; "
+                "it is not reliable enough on its own to confirm the landline area."
+            )
+            checks["phone_area"] = _check(UNVERIFIED, message=message)
         if reported_district:
             if reported_district == area_district:
                 matching_evidence.append(f"reported district matches {area_district}")
