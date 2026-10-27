@@ -129,6 +129,16 @@ class RuleTests(unittest.TestCase):
         self.assertNotIn("LINE_DISTANCE_LIMIT", result["issue_codes"])
         self.assertEqual(result["checks"]["line_distance"]["status"], PASS)
 
+    def test_overhead_distance_500m_status_fails_when_direct_distance_exceeds_limit(self):
+        row = self.good_row()
+        row["customer_latitude"], row["customer_longitude"] = "6.9", "79.8"
+        row["dp_latitude"], row["dp_longitude"] = "6.91", "79.8"
+        result = validate_row(row, country_check=lambda lat, lon: True)
+        self.assertGreater(result["overhead_distance_m"], 500.0)
+        self.assertEqual(result["checks"]["overhead_distance_500m"]["status"], FAIL)
+        self.assertIn("CUSTOMER_DP_DISTANCE", result["issue_codes"])
+        self.assertEqual(result["overhead_distance_500m_status"], FAIL)
+
     def test_google_routes_distance_is_used_for_the_500m_rule_when_configured(self):
         row = self.good_row()
         row["router_number"] = "ROUTER-001"
