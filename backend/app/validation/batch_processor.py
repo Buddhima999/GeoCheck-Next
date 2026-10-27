@@ -452,6 +452,7 @@ def process_csv_file(
                             "customer_id_normalized": result.get("customer_id_normalized"),
                             "router_number": result.get("router_number"),
                             "calculated_customer_dp_distance_m": result.get("calculated_customer_dp_distance_m"),
+                            "overhead_distance_m": result.get("overhead_distance_m"),
                             "google_route_distance_m": result.get("google_route_distance_m"),
                             "distance_500m_m": result.get("distance_500m_m"),
                             "distance_500m_status": result.get("distance_500m_status"),
