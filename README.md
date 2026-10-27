@@ -62,7 +62,7 @@ The response contains a run_id and poll_url. Check progress:
 curl.exe -H "X-API-Key: YOUR_SECRET" http://127.0.0.1:8000/api/validation-runs/YOUR_RUN_ID
 ~~~
 
-The upload endpoint accepts CSV files only. Default limits are 512 MiB and 1,000,000 source rows; override them via MAX_UPLOAD_BYTES and MAX_CSV_ROWS. Automatic column detection requires customer latitude/longitude and DP latitude/longitude. To supply a custom mapping, pass column_mapping as a JSON form field containing logical-field-to-header mappings.
+The upload endpoint accepts CSV files only. Default limits are 512 MiB and 1,000,000 source rows; override them via MAX_UPLOAD_BYTES and MAX_CSV_ROWS. The frontend calls the protected /api/validation-runs/preview endpoint to read just the CSV header and propose a mapping; confirm the four required coordinate columns and choose optional mappings before uploading. The upload then sends column_mapping as a JSON form field. The worker performs a full syntax/field-size/row-count preflight before writing validation records.
 
 The API key is a basic shared-secret gate for development, not full identity-level authentication. Do not expose these endpoints publicly or upload real customer data until identity/access controls, transport security, storage security, retention/deletion rules, and operational monitoring have been reviewed.
 
@@ -74,7 +74,24 @@ npm install
 npm run dev
 ~~~
 
-Vite proxies /api calls to http://127.0.0.1:8000 during development. The current frontend remains a scaffold; it does not yet provide the complete upload, mapping, hierarchy, map, and export experience.
+Vite proxies /api calls to http://127.0.0.1:8000 during development. The frontend includes API-key connection, CSV header preview and column mapping, upload/run progress, paginated customer/DP results, issue explorer, reported-geography hierarchy, map explorer, and CSV exports. It uses VITE_MAP_TILE_URL when configured, otherwise it displays OpenStreetMap tiles; tile requests share the map viewport with the selected tile provider, so use synthetic data until an approved provider/tile service is configured.
+
+### Benchmark the streaming pipeline
+
+The benchmark requires a disposable MongoDB instance and deliberately refuses to fall back to the application MONGO_URI. It creates a random database name and drops that database at the end unless --keep-db is explicitly supplied. Run this only against a test MongoDB service:
+
+~~~powershell
+$env:GEOCHECK_BENCH_MONGO_URI = "mongodb://127.0.0.1:27017"
+python backend/scripts/benchmark_validation.py --rows 10000 --dp-count 2500 --batch-size 1000
+~~~
+
+Run the full scale target after the smaller benchmark succeeds and you have checked disk space and database capacity:
+
+~~~powershell
+python backend/scripts/benchmark_validation.py --rows 600000 --dp-count 150000 --batch-size 1000 --report test-data/generated/geocheck-benchmark-report.json
+~~~
+
+The report includes generated/stored row reconciliation, elapsed generation/validation time, throughput and peak Python heap allocation. Peak Python heap is not total process or MongoDB memory; record host RAM, disk, MongoDB configuration and index storage separately. Synthetic rows and generated reports are local test artifacts, not production customer data.
 
 ### Backend unit tests
 
@@ -84,7 +101,7 @@ From the repository root:
 python -m unittest discover -s backend/tests -p "test_*.py" -v
 ~~~
 
-The same test command runs automatically in GitHub Actions for pushes to main and feature branches and for pull requests targeting main. Tests use synthetic fixtures and in-memory collection fakes; they are not a live MongoDB integration or performance test.
+The same test command runs automatically in GitHub Actions for pushes to main and feature branches and for pull requests targeting main. Most unit/API tests use synthetic fixtures and in-memory collection fakes. A separate CI workflow starts a disposable MongoDB service and exercises atomic queue claims, clean replay, and a small benchmark smoke run. The full 600,000-row benchmark is intentionally not run on every CI build; run it on the machine/environment you plan to use.
 
 ## Queue and failure behavior
 
