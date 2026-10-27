@@ -180,6 +180,15 @@ class BatchProcessorTests(unittest.TestCase):
         self.assertFalse(customers.documents[0]["eligible_for_dp_assessment"])
         self.assertEqual(dps.documents[0]["eligible_customer_row_count"], 0)
 
+    def test_blank_csv_record_is_counted_but_not_validated_as_customer(self):
+        rows = [self.make_row("C-1"), {key: "" for key in HEADERS}, self.make_row("C-2")]
+        result, _, customers, dps = self.run_rows(rows, batch_size=2)
+        self.assertEqual(result["source_rows_seen"], 3)
+        self.assertEqual(result["blank_rows_skipped"], 1)
+        self.assertEqual(result["rows_processed"], 2)
+        self.assertEqual(len(customers.documents), 2)
+        self.assertEqual(dps.documents[0]["observed_row_count"], 2)
+
     def test_invalid_batch_size_is_rejected(self):
         with tempfile.TemporaryDirectory() as temp:
             path = Path(temp) / "empty.csv"
