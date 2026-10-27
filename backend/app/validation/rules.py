@@ -23,9 +23,8 @@ class ValidationSettings:
     # No line-distance maximum is applied until the provider approves a threshold.
     max_line_distance_m: float | None = None
     overhead_distance_tolerance_m: float = 25.0
-    # Do not compare route/overhead length to straight-line distance unless the
-    # provider confirms that this column is intended to represent straight-line distance.
-    overhead_distance_is_straight_line: bool = False
+    # Provider confirmed overhead_distance_m is straight-line customer-to-DP distance.
+    overhead_distance_is_straight_line: bool = True
     dp_coordinate_tolerance_m: float = 50.0
     # A rough envelope is used only to diagnose possible coordinate swaps.
     # It is NOT a legal country boundary.
