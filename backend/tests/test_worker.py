@@ -237,7 +237,7 @@ class WorkerTests(unittest.TestCase):
                 self.assertEqual(customers.documents, [])
                 self.assertEqual(dps.documents, [])
                 updated = runs.find_one({"run_id": "replay-run"})
-                self.assertEqual(updated["status"], "COMPLETED")
+                self.assertEqual(updated["status"], "COMPLETED", updated.get("last_error"))
                 self.assertEqual(updated["rows_processed"], 1)
                 self.assertEqual(updated["issue_counts"], {})
                 self.assertNotIn("input_file_key", updated)
