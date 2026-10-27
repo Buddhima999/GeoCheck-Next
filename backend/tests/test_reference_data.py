@@ -98,6 +98,24 @@ class ReferenceDataTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "out-of-range"):
                 ReferenceData.load(root)
 
+    def test_ambiguous_provider_region_pair_stays_unverified(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            self.make_reference_directory(root)
+            (root / "provider_regions.csv").write_text(
+                "province,district,region\n"
+                "Sample Province,Sample District,Region-A\n"
+                "Sample Province,Sample District,Region-B\n",
+                encoding="utf-8",
+            )
+            references = ReferenceData.load(root)
+            result = references.geography_check({
+                "reported_province": "Sample Province",
+                "reported_district": "Sample District",
+                "reported_region": "Region-A",
+            }, 6.5, 79.5)
+            self.assertIsNone(result)
+
 
 if __name__ == "__main__":
     unittest.main()
