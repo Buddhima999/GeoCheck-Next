@@ -22,6 +22,29 @@ Scalable customer and distribution-point (DP/FDP) location data-quality applicat
 7. Do not invent the service provider's regions or LEA mapping.
 8. Do not report production readiness until scale and reconciliation tests pass.
 
+## Quick start with Docker Desktop (recommended)
+
+1. Install/start Docker Desktop.
+2. Copy the example environment file and generate a private key. In PowerShell, from the repository root:
+
+~~~powershell
+Copy-Item .env.example .env
+python -c "import secrets; print(secrets.token_urlsafe(32))"
+~~~
+
+3. Open the new root .env file, replace GEOCHECK_API_KEY with the generated value, and save it.
+4. Start the whole stack:
+
+~~~powershell
+docker compose up --build
+~~~
+
+5. Open **http://localhost:5173** in your browser. Paste the same GEOCHECK_API_KEY value into the API access key field, then upload a synthetic CSV first.
+
+The Compose stack starts MongoDB, the FastAPI API, the background worker and the frontend. MongoDB data and temporary uploads persist in Docker-managed volumes. Stop the stack with Ctrl+C, then use `docker compose down`. The database volume is retained. **Do not run `docker compose down -v` unless you intentionally want to delete the local MongoDB database and upload volume.**
+
+The shared-key login is for a local development workspace, not an Internet-facing security model. Keep the ports local and do not upload real customer data until the organization approves access control, data retention and the reference/map data sources.
+
 ## Run locally
 
 ### Backend API
@@ -62,7 +85,7 @@ The response contains a run_id and poll_url. Check progress:
 curl.exe -H "X-API-Key: YOUR_SECRET" http://127.0.0.1:8000/api/validation-runs/YOUR_RUN_ID
 ~~~
 
-The upload endpoint accepts CSV files only. Default limits are 512 MiB and 1,000,000 source rows; override them via MAX_UPLOAD_BYTES and MAX_CSV_ROWS. The frontend calls the protected /api/validation-runs/preview endpoint to read just the CSV header and propose a mapping; confirm the four required coordinate columns and choose optional mappings before uploading. The upload then sends column_mapping as a JSON form field. The worker performs a full syntax/field-size/row-count preflight before writing validation records.
+The upload endpoint accepts CSV files only. Default limits are 512 MiB and 1,000,000 source rows; override them via MAX_UPLOAD_BYTES and MAX_CSV_ROWS. The frontend calls the protected /api/validation-runs/preview endpoint to read just the CSV header and propose a mapping; confirm the four required coordinate columns and choose optional mappings before uploading. The upload then sends column_mapping as a JSON form field. The worker performs a full syntax/field-size/row-count preflight before writing validation records. The API and worker must share the same upload directory and MongoDB database.
 
 The API key is a basic shared-secret gate for development, not full identity-level authentication. Do not expose these endpoints publicly or upload real customer data until identity/access controls, transport security, storage security, retention/deletion rules, and operational monitoring have been reviewed.
 
