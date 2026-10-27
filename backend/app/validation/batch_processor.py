@@ -177,10 +177,16 @@ def _make_dp_updates(
         }
         # Fill an earlier coordinate-less DP record when a later valid observation arrives.
         if prior and _valid_point(prior.get("dp_location_observed")) is None and anchor_doc is not None:
+            # Avoid conflicting MongoDB update paths across update operators.
+            update["$setOnInsert"].pop("dp_location_observed", None)
+            update["$setOnInsert"].pop("coordinate_consistency", None)
             update["$set"]["dp_location_observed"] = anchor_doc
             if not conflict:
                 update["$set"]["coordinate_consistency"] = "CONSISTENT"
         if conflict:
+            # $setOnInsert and $addToSet/$set cannot target the same field.
+            update["$setOnInsert"].pop("coordinate_consistency", None)
+            update["$setOnInsert"].pop("issue_codes", None)
             update["$set"]["coordinate_consistency"] = "CONFLICT"
             update["$addToSet"] = {"issue_codes": "DP_COORD_CONFLICT"}
             update["$set"]["first_conflict_seen_at"] = prior.get("first_conflict_seen_at") or timestamp
