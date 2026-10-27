@@ -28,7 +28,7 @@ The upload profile requires these mapped fields: `customer_id`, `router_number`,
 | `PHONE_AREA_MISMATCH` | Customer | Geographic phone area conflicts with location-derived area | Apply approved LEA table; normally a review finding |
 | `ADDRESS_ZONE_MISMATCH` | Customer | Coordinates outside reliably resolved locality zone | Unverified if locality ambiguous or zone unavailable |
 | `CUSTOMER_DP_DISTANCE` | Customer-DP relationship | Straight-line distance exceeds threshold | Association anomaly; use only eligible customer evidence for DP scoring |
-| `OVERHEAD_DISTANCE_MISMATCH` | Distance field | Reported straight-line customer-to-DP distance differs beyond approved tolerance from coordinates | Enabled by default; provider confirmed the semantics. The 25 m tolerance remains provisional pending approval |
+| `OVERHEAD_DISTANCE_MISMATCH` | Distance field | A supplied overhead-distance value differs beyond approved tolerance from coordinates | Applied when the source CSV includes a reported overhead distance; the 25 m tolerance remains provisional pending approval |
 | `LINE_DISTANCE_INVALID` | Distance field | Non-numeric, negative or invalid value | Invalid line distance must never pass merely because it is below threshold |
 | `DP_COORD_CONFLICT` | DP | Same normalized DP ID has materially different coordinate observations | Report groups/rows; never choose a winner automatically |
 | `CUSTOMER_ID_CONFLICT` | Source row/customer | Same normalized customer ID has incompatible source records | Preserve each row |
@@ -37,11 +37,12 @@ The upload profile requires these mapped fields: `customer_id`, `router_number`,
 
 Two distance measurements are kept separate:
 
-- `DISTANCE_METHOD=straight_line` (default) calculates the direct customer-to-DP separation with Haversine. It is local, needs no Google API key and is the default 500 m check.
+- The output `overhead_distance_m` is calculated from customer and DP coordinates using Haversine. `overhead_distance_500m_status` reports whether that direct distance is within `CUSTOMER_DP_LIMIT_M` (default 500 m), separately from any road-route measurement.
+- `DISTANCE_METHOD=straight_line` (default) uses Haversine for the main 500 m relationship check. It is local and needs no Google API key.
 - `DISTANCE_METHOD=google_routes` calls the Google Maps Routes API in `DRIVE` mode and compares its road-route distance with `CUSTOMER_DP_LIMIT_M` (default 500 m). Google requires a response field mask; the implementation requests only `routes.distanceMeters`. The route value is not the overhead cable length. Without a key, with an unavailable route, or after the per-run API request cap, the route check remains `UNVERIFIED` and never falls back silently to Haversine. See the [Routes API](https://developers.google.com/maps/documentation/routes/compute_route_directions) documentation.
 - The report keeps the Haversine direct distance separate from any Google road-route distance. It does not claim that either one is actual cable length.
 - `line_distance_m` is checked for presence, finiteness and non-negative numeric value. No maximum is assumed by default because actual cable length can differ from direct or road distance. A provider-approved maximum can be configured with `MAX_LINE_DISTANCE_M`.
-- `overhead_distance_m`, if separately supplied, is optional and is checked against coordinate-derived distance only when the provider confirms the field has that exact meaning. Its tolerance defaults to 25 m and should be approved before production use.
+- If the input CSV separately includes a source `overhead_distance_m`, it is preserved in the source values and exported as `reported_overhead_distance_m`; it is compared with the coordinate-derived value using the configured tolerance (25 m by default) because the existing project contract defines this measurement as direct customer-to-DP separation.
 
 ### Google address validation
 
