@@ -21,7 +21,7 @@ NOT_APPLICABLE = "NOT_APPLICABLE"
 class ValidationSettings:
     customer_dp_limit_m: float = 500.0
     # The requested customer/line threshold is 500 m; override only with provider approval.
-    max_line_distance_m: float | None = 500.0
+    max_line_distance_m: float | None = None
     distance_method: str = "straight_line"
     address_match_tolerance_m: float = 500.0
     overhead_distance_tolerance_m: float = 25.0
