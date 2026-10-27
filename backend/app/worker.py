@@ -13,7 +13,7 @@ import time
 import uuid
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 from pymongo import ASCENDING, ReturnDocument
 from pymongo.collection import Collection
@@ -22,6 +22,7 @@ from pymongo.errors import PyMongoError
 from .config import settings
 from .database import client, customer_records, dp_records, ensure_indexes, ping_database, validation_runs
 from .upload_storage import remove_upload, resolve_upload_path
+from .reference_data import ReferenceData, load_reference_data
 from .validation.batch_processor import process_csv_file
 from .validation.csv_import import iter_mapped_rows
 
@@ -59,8 +60,9 @@ def preflight_csv_file(
     mapping: dict[str, str],
     *,
     max_rows: int,
+    progress_callback: Callable[[int], None] | None = None,
 ) -> int:
-    """Stream-check CSV syntax, row width and field limits before writing customer rows."""
+    """Stream-check CSV syntax and limits before writing customer rows."""
     source_rows = 0
     with csv_path.open("r", newline="", encoding="utf-8-sig") as stream:
         for _ in iter_mapped_rows(
@@ -70,6 +72,10 @@ def preflight_csv_file(
             include_blank_rows=True,
         ):
             source_rows += 1
+            if progress_callback and source_rows % 10_000 == 0:
+                progress_callback(source_rows)
+    if progress_callback:
+        progress_callback(source_rows)
     return source_rows
 
 
@@ -77,10 +83,13 @@ def mark_stale_processing_runs(
     run_collection: Collection,
     *,
     stale_after_seconds: int,
+    max_attempts: int = 2,
 ) -> int:
-    """Fail interrupted jobs after a no-progress timeout; do not replay partial writes."""
+    """Requeue stale work once for a clean restart; fail and clean up after max attempts."""
     if stale_after_seconds < 1:
         raise ValueError("stale_after_seconds must be at least 1")
+    if max_attempts < 1:
+        raise ValueError("max_attempts must be at least 1")
 
     cutoff = utc_now() - timedelta(seconds=stale_after_seconds)
     stale_query = {
@@ -93,15 +102,21 @@ def mark_stale_processing_runs(
             },
         ],
     }
-    failed_count = 0
+    changed_count = 0
     for run in run_collection.find(
         stale_query,
-        {"run_id": 1, "input_file_key": 1, "last_progress_at": 1, "processing_started_at": 1},
+        {
+            "run_id": 1,
+            "input_file_key": 1,
+            "last_progress_at": 1,
+            "processing_started_at": 1,
+            "attempt_count": 1,
+        },
     ):
         run_id = run.get("run_id")
         if not run_id:
             continue
-        # Guard against failing a run that made progress after the stale query.
+        # Guard against updating a run that made progress after the stale query.
         guard: dict[str, Any] = {"run_id": run_id, "status": "PROCESSING"}
         if run.get("last_progress_at") is not None:
             guard["last_progress_at"] = run["last_progress_at"]
@@ -111,27 +126,47 @@ def mark_stale_processing_runs(
                 guard["processing_started_at"] = run["processing_started_at"]
 
         now = utc_now()
-        result = run_collection.update_one(
-            guard,
-            {
+        attempts = int(run.get("attempt_count", 1) or 1)
+        if attempts < max_attempts and run.get("input_file_key"):
+            update = {
+                "$set": {
+                    "status": "QUEUED",
+                    "stage": "REQUEUED_AFTER_STALE",
+                    "restart_from_beginning": True,
+                    "restart_requested_at": now,
+                    "last_error": (
+                        "The worker stopped reporting progress. This run will be retried from the "
+                        "beginning after clearing its partial results."
+                    ),
+                },
+                "$unset": {
+                    "processing_started_at": "",
+                    "last_progress_at": "",
+                    "worker_id": "",
+                    "worker_claimed_at": "",
+                },
+            }
+        else:
+            update = {
                 "$set": {
                     "status": "FAILED",
                     "stage": "INTERRUPTED",
                     "failed_at": now,
                     "recovery_action": "REUPLOAD_REQUIRED",
                     "last_error": (
-                        "The worker stopped reporting progress. Partial writes were not resumed; "
-                        "submit the source CSV again as a new run."
+                        "The worker stopped reporting progress and the retry limit was reached. "
+                        "Partial records remain attached to this failed run; upload the source CSV "
+                        "again to create a new run."
                     ),
                 },
                 "$unset": {"input_file_key": ""},
-            },
-        )
+            }
+        result = run_collection.update_one(guard, update)
         if getattr(result, "matched_count", 0):
-            remove_upload(run.get("input_file_key"))
-            failed_count += 1
-    return failed_count
-
+            changed_count += 1
+            if update["$set"]["status"] == "FAILED":
+                remove_upload(run.get("input_file_key"))
+    return changed_count
 
 def process_next_queued_run(
     *,
@@ -141,8 +176,9 @@ def process_next_queued_run(
     worker_id: str | None = None,
     batch_size: int | None = None,
     max_rows: int | None = None,
+    reference_data: ReferenceData | None = None,
 ) -> bool:
-    """Claim and process one job. Return False when the queue contains no job."""
+    """Claim one job and restart it from a clean per-run result set before processing."""
     identity = worker_id or f"{socket.gethostname()}-{uuid.uuid4().hex[:8]}"
     run = claim_next_run(run_collection, identity)
     if run is None:
@@ -164,11 +200,60 @@ def process_next_queued_run(
             {"run_id": run_id, "status": "PROCESSING"},
             {"$set": {"stage": "PREFLIGHT", "preflight_started_at": utc_now()}},
         )
-        preflight_count = preflight_csv_file(csv_path, mapping, max_rows=configured_max_rows)
+
+        def record_preflight_progress(rows_scanned: int) -> None:
+            run_collection.update_one(
+                {"run_id": run_id, "status": "PROCESSING"},
+                {"$set": {"last_progress_at": utc_now(), "preflight_rows_scanned": rows_scanned}},
+            )
+
+        preflight_count = preflight_csv_file(
+            csv_path,
+            mapping,
+            max_rows=configured_max_rows,
+            progress_callback=record_preflight_progress,
+        )
+
+        # Clear previous partial output only after the complete source passes preflight.
+        customer_collection.delete_many({"run_id": run_id})
+        dp_collection.delete_many({"run_id": run_id})
+        restart_fields = {
+            "stage": "VALIDATING",
+            "preflight_source_rows": preflight_count,
+            "rows_processed": 0,
+            "source_rows_seen": 0,
+            "blank_rows_skipped": 0,
+            "batches_processed": 0,
+            "rows_with_findings": 0,
+            "rows_with_hard_errors": 0,
+            "issue_counts": {},
+            "last_progress_at": utc_now(),
+            "last_error": None,
+        }
+        unset_fields = {
+            "summary": "",
+            "completed_at": "",
+            "failed_at": "",
+            "partial_rows_processed": "",
+            "partial_source_rows_seen": "",
+            "partial_blank_rows_skipped": "",
+            "partial_batches_processed": "",
+            "recovery_action": "",
+            "restart_from_beginning": "",
+        }
+        if reference_data is not None:
+            ref_status = reference_data.status()
+            restart_fields["reference_versions"] = reference_data.versions
+            restart_fields["reference_status"] = {
+                key: value
+                for key, value in ref_status.items()
+                if key != "warning" and key != "directory"
+            }
         run_collection.update_one(
             {"run_id": run_id, "status": "PROCESSING"},
-            {"$set": {"stage": "VALIDATING", "preflight_source_rows": preflight_count}},
+            {"$set": restart_fields, "$unset": unset_fields},
         )
+        callbacks = reference_data.callbacks() if reference_data is not None else {}
         summary = process_csv_file(
             csv_path,
             run_id=run_id,
@@ -178,6 +263,7 @@ def process_next_queued_run(
             dp_records=dp_collection,
             batch_size=configured_batch_size,
             max_rows=configured_max_rows,
+            **callbacks,
         )
         terminal_status = str(summary.get("status", "FAILED"))
         logger.info(
@@ -229,6 +315,7 @@ def run_worker() -> None:
     )
     ping_database()
     ensure_indexes()
+    reference_data = load_reference_data()
     logger.info("GeoCheck validation worker started.")
     try:
         while True:
@@ -236,8 +323,9 @@ def run_worker() -> None:
                 mark_stale_processing_runs(
                     validation_runs,
                     stale_after_seconds=settings.worker_stale_after_seconds,
+                    max_attempts=settings.worker_max_attempts,
                 )
-                did_work = process_next_queued_run()
+                did_work = process_next_queued_run(reference_data=reference_data)
                 if not did_work:
                     time.sleep(settings.worker_poll_seconds)
             except KeyboardInterrupt:

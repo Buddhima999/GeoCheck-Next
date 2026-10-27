@@ -38,7 +38,8 @@ def _get_run_or_404(run_id: str) -> dict[str, Any]:
     return run
 
 
-def _safe_search_query(query: str | None, fields: tuple[str, ...]) -> dict[str, Any] | None:
+def _customer_search_query(query: str | None) -> dict[str, Any] | None:
+    """Search pre-normalized row terms using indexed prefix expressions."""
     if query is None or not query.strip():
         return None
     needle = query.strip()
@@ -47,13 +48,47 @@ def _safe_search_query(query: str | None, fields: tuple[str, ...]) -> dict[str, 
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
             detail=f"Search text must be at most {MAX_QUERY_LENGTH} characters.",
         )
-    pattern = re.escape(needle)
-    return {
-        "$or": [
-            {field: {"$regex": pattern, "$options": "i"}}
-            for field in fields
+    compact = "".join(character for character in needle.casefold() if character.isalnum())
+    tokens: list[str] = []
+    current: list[str] = []
+    for character in needle.casefold():
+        if character.isalnum():
+            current.append(character)
+        elif current:
+            tokens.append("".join(current))
+            current = []
+    if current:
+        tokens.append("".join(current))
+    if not compact:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="Search text must contain at least one letter or number.",
+        )
+
+    compact_prefix = {"search_terms_normalized": {"$regex": "^" + re.escape(compact)}}
+    if len(tokens) <= 1:
+        return compact_prefix
+    token_query = {
+        "$and": [
+            {"search_terms_normalized": {"$regex": "^" + re.escape(token)}}
+            for token in tokens
         ]
     }
+    return {"$or": [compact_prefix, token_query]}
+
+
+def _dp_search_query(query: str | None) -> dict[str, Any] | None:
+    """Use the indexed normalized DP identifier for predictable-prefix searches."""
+    if query is None or not query.strip():
+        return None
+    needle = query.strip()
+    if len(needle) > MAX_QUERY_LENGTH:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=f"Search text must be at most {MAX_QUERY_LENGTH} characters.",
+        )
+    normalized = needle.casefold()
+    return {"dp_id_normalized": {"$regex": "^" + re.escape(normalized)}}
 
 
 def _and_queries(*queries: dict[str, Any] | None) -> dict[str, Any]:
@@ -168,15 +203,7 @@ def list_customer_results(
     _get_run_or_404(run_id)
     query = _and_queries(
         {"run_id": run_id},
-        _safe_search_query(
-            q,
-            (
-                "customer_id",
-                "dp_id",
-                "source_values.phone_number",
-                "source_values.address",
-            ),
-        ),
+        _customer_search_query(q),
         {"issue_codes": issue_code.strip().upper()} if issue_code and issue_code.strip() else None,
         {"eligible_for_dp_assessment": eligible_for_dp_assessment}
         if eligible_for_dp_assessment is not None else None,
@@ -217,7 +244,7 @@ def list_dp_results(
     _get_run_or_404(run_id)
     query_parts: list[dict[str, Any] | None] = [
         {"run_id": run_id},
-        _safe_search_query(q, ("dp_id", "dp_id_normalized")),
+        _dp_search_query(q),
     ]
     if consistency:
         normalized = consistency.strip().upper()
@@ -247,7 +274,27 @@ def list_dp_results(
             "issue_codes": 1,
         },
     ).sort("dp_id_normalized", 1).skip(skip).limit(limit)
-    return {"items": list(cursor), "total": total, "limit": limit, "skip": skip}
+    items = []
+    for document in cursor:
+        item = dict(document)
+        eligible_rows = int(item.get("eligible_customer_row_count", 0) or 0)
+        assessed_rows = int(item.get("eligible_distance_assessed_row_count", 0) or 0)
+        failed_rows = int(item.get("eligible_distance_fail_row_count", 0) or 0)
+        passed_rows = int(item.get("eligible_distance_pass_row_count", 0) or 0)
+        item["eligible_distance_assessed_row_count"] = assessed_rows
+        item["eligible_distance_pass_row_count"] = passed_rows
+        item["eligible_distance_fail_percentage"] = (
+            round(failed_rows * 100.0 / assessed_rows, 2) if assessed_rows else None
+        )
+        if assessed_rows == 0:
+            item["association_evidence"] = "INSUFFICIENT_ELIGIBLE_ROWS"
+        elif failed_rows > 0:
+            item["association_evidence"] = "DISTANCE_FAILURES_OBSERVED"
+        else:
+            item["association_evidence"] = "NO_DISTANCE_FAILURES_OBSERVED"
+        item["association_threshold_configured"] = False
+        items.append(item)
+    return {"items": items, "total": total, "limit": limit, "skip": skip}
 
 
 @router.get("/{run_id}/hierarchy", dependencies=[Depends(require_api_key)])
@@ -442,11 +489,32 @@ def export_dp_results(run_id: str, consistency: str | None = Query(default=None,
         "valid_coordinate_observation_count",
         "coordinate_conflict_observation_count",
         "eligible_customer_row_count",
+        "eligible_distance_pass_row_count",
         "eligible_distance_fail_row_count",
+        "eligible_distance_fail_percentage",
+        "association_evidence",
+        "association_threshold_configured",
         "issue_codes",
     ]
+
+    def dp_export_rows() -> Iterator[dict[str, Any]]:
+        for document in cursor:
+            assessed_rows = int(document.get("eligible_distance_assessed_row_count", 0) or 0)
+            failed_rows = int(document.get("eligible_distance_fail_row_count", 0) or 0)
+            item = dict(document)
+            item["eligible_distance_assessed_row_count"] = assessed_rows
+            item["eligible_distance_pass_row_count"] = int(document.get("eligible_distance_pass_row_count", 0) or 0)
+            item["eligible_distance_fail_percentage"] = round(failed_rows * 100.0 / assessed_rows, 2) if assessed_rows else None
+            item["association_evidence"] = (
+                "INSUFFICIENT_ELIGIBLE_ROWS" if assessed_rows == 0
+                else "DISTANCE_FAILURES_OBSERVED" if failed_rows > 0
+                else "NO_DISTANCE_FAILURES_OBSERVED"
+            )
+            item["association_threshold_configured"] = False
+            yield item
+
     return StreamingResponse(
-        _csv_stream(cursor, fields),
+        _csv_stream(dp_export_rows(), fields),
         media_type="text/csv; charset=utf-8",
         headers={"Content-Disposition": f'attachment; filename="geocheck-{run_id}-dps.csv"'},
     )

@@ -1,4 +1,5 @@
 import { type FormEvent, useCallback, useEffect, useMemo, useState } from "react";
+import MapView, { type MapMarker } from "./MapView";
 import {
   Activity, AlertTriangle, ArrowDownToLine, Check, CheckCircle2, ChevronLeft,
   ChevronRight, CircleHelp, Clock3, Database, FileCheck2, FileSpreadsheet,
@@ -8,7 +9,7 @@ import {
 
 type HealthState = "checking" | "connected" | "unavailable";
 type RunStatus = "QUEUED" | "PROCESSING" | "COMPLETED" | "FAILED";
-type Tab = "overview" | "upload" | "results" | "hierarchy" | "issues";
+type Tab = "overview" | "upload" | "results" | "map" | "hierarchy" | "issues";
 type ValidationRun = {
   run_id: string;
   status: RunStatus;
@@ -29,6 +30,7 @@ type ValidationRun = {
   summary?: Record<string, number>;
 };
 type RunPage = { items: ValidationRun[]; total: number; limit: number; skip: number };
+type CsvPreview = { headers: string[]; detected_mapping: Record<string, string>; supported_fields: string[]; required_fields: string[]; file_name: string };
 type RunSummary = {
   run_id: string;
   status: RunStatus;
@@ -45,6 +47,8 @@ type RunSummary = {
   issue_counts: Record<string, number>;
   note: string;
 };
+type ReferenceFileStatus = { configured: boolean; feature_or_mapping_count: number; sha256: string | null; status: "LOADED" | "MISSING" };
+type ReferenceStatus = { directory_configured: boolean; country_boundary: ReferenceFileStatus; administrative_areas: ReferenceFileStatus; lea_areas: ReferenceFileStatus; provider_regions: ReferenceFileStatus; warning: string };
 type CustomerResult = {
   row_number: number;
   customer_id?: string | null;
@@ -52,6 +56,7 @@ type CustomerResult = {
   source_values?: Record<string, string>;
   customer_location?: { lat: number; lon: number } | null;
   dp_location_observed?: { lat: number; lon: number } | null;
+  checks?: Record<string, { status: string; distance_m?: number; message?: string }>;
   issue_codes?: string[];
   findings?: Array<{ code: string; severity: string; message: string }>;
   has_hard_error?: boolean;
@@ -65,7 +70,12 @@ type DPResult = {
   valid_coordinate_observation_count: number;
   coordinate_conflict_observation_count: number;
   eligible_customer_row_count: number;
+  eligible_distance_assessed_row_count?: number;
+  eligible_distance_pass_row_count?: number;
   eligible_distance_fail_row_count: number;
+  eligible_distance_fail_percentage?: number | null;
+  association_evidence?: string;
+  association_threshold_configured?: boolean;
   issue_codes?: string[];
 };
 type Page<T> = { items: T[]; total: number; limit: number; skip: number };
@@ -82,6 +92,7 @@ const tabs: Array<{ id: Tab; label: string; icon: typeof Activity }> = [
   { id: "overview", label: "Overview", icon: Activity },
   { id: "upload", label: "Upload & runs", icon: FileSpreadsheet },
   { id: "results", label: "Customer & DP results", icon: Database },
+  { id: "map", label: "Map explorer", icon: MapPinned },
   { id: "hierarchy", label: "Geographic hierarchy", icon: Map },
   { id: "issues", label: "Issue explorer", icon: AlertTriangle },
 ];
@@ -109,8 +120,9 @@ function statusClass(status?: string) {
   return (status || "unknown").toLowerCase();
 }
 function StatusBadge({ status }: { status: string }) {
-  const Icon = status === "COMPLETED" ? CheckCircle2 :
-    status === "FAILED" ? XCircle :
+  const Icon = status === "COMPLETED" || status === "PASS" ? CheckCircle2 :
+    status === "FAILED" || status === "FAIL" ? XCircle :
+    status === "CONFLICT" ? AlertTriangle :
     status === "PROCESSING" ? LoaderCircle : Clock3;
   return <span className={`status-badge ${statusClass(status)}`}><Icon size={13} />{status}</span>;
 }
@@ -133,7 +145,12 @@ export default function App() {
   const [selectedRunId, setSelectedRunId] = useState("");
   const [run, setRun] = useState<ValidationRun | null>(null);
   const [summary, setSummary] = useState<RunSummary | null>(null);
+  const [referenceStatus, setReferenceStatus] = useState<ReferenceStatus | null>(null);
+  const [loadingReferences, setLoadingReferences] = useState(false);
   const [file, setFile] = useState<File | null>(null);
+  const [csvPreview, setCsvPreview] = useState<CsvPreview | null>(null);
+  const [columnMapping, setColumnMapping] = useState<Record<string, string>>({});
+  const [previewing, setPreviewing] = useState(false);
   const [uploading, setUploading] = useState(false);
   const [loadingRuns, setLoadingRuns] = useState(false);
   const [error, setError] = useState("");
@@ -155,6 +172,31 @@ export default function App() {
     if (apiKey.trim()) headers.set("X-API-Key", apiKey.trim());
     return fetch(path, { ...init, headers });
   }, [apiKey]);
+
+  const previewFile = useCallback(async (selectedFile: File | null) => {
+    if (!selectedFile || !apiKey.trim() || !selectedFile.name.toLowerCase().endsWith(".csv")) {
+      setCsvPreview(null);
+      setColumnMapping({});
+      return;
+    }
+    setPreviewing(true);
+    setError("");
+    const form = new FormData();
+    form.append("file", selectedFile);
+    try {
+      const response = await apiFetch("/api/validation-runs/preview", { method: "POST", body: form });
+      const preview = await readJson<CsvPreview>(response);
+      setCsvPreview(preview);
+      setColumnMapping(preview.detected_mapping);
+      setNotice("Detected " + preview.headers.length + " CSV columns. Review required mappings before uploading.");
+    } catch (cause) {
+      setCsvPreview(null);
+      setColumnMapping({});
+      setError(cause instanceof Error ? cause.message : "Could not preview CSV headers.");
+    } finally {
+      setPreviewing(false);
+    }
+  }, [apiFetch, apiKey]);
 
   const loadRuns = useCallback(async (showSpinner = true) => {
     if (!apiKey.trim()) {
@@ -219,9 +261,7 @@ export default function App() {
     if (!apiKey.trim() || !selectedRunId) return;
     setLoadingHierarchy(true);
     try {
-      const response = await apiFetch(
-        `/api/validation-runs/${encodeURIComponent(selectedRunId)}/hierarchy?limit=100&skip=${skip}`,
-      );
+      const response = await apiFetch("/api/validation-runs/" + encodeURIComponent(selectedRunId) + "/hierarchy?limit=100&skip=" + skip);
       setHierarchy(await readJson<Page<HierarchyItem>>(response));
       setHierarchySkip(skip);
       setError("");
@@ -231,6 +271,19 @@ export default function App() {
       setLoadingHierarchy(false);
     }
   }, [apiFetch, apiKey, hierarchySkip, selectedRunId]);
+
+  const loadReferenceStatus = useCallback(async () => {
+    if (!apiKey.trim()) return;
+    setLoadingReferences(true);
+    try {
+      const response = await apiFetch("/api/reference-data/status");
+      setReferenceStatus(await readJson<ReferenceStatus>(response));
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : "Could not load reference-data inventory.");
+    } finally {
+      setLoadingReferences(false);
+    }
+  }, [apiFetch, apiKey]);
 
   useEffect(() => {
     let alive = true;
@@ -249,9 +302,21 @@ export default function App() {
   }, [apiKey, loadRuns]);
 
   useEffect(() => {
+    if (file && apiKey.trim()) void previewFile(file);
+  }, [file, apiKey, previewFile]);
+
+  useEffect(() => {
     if (!selectedRunId || !apiKey.trim()) return;
     void loadRun(selectedRunId);
   }, [selectedRunId, apiKey, loadRun]);
+
+  useEffect(() => {
+    if (!apiKey.trim()) {
+      setReferenceStatus(null);
+      return;
+    }
+    void loadReferenceStatus();
+  }, [apiKey, loadReferenceStatus]);
 
   useEffect(() => {
     if (!run || (run.status !== "QUEUED" && run.status !== "PROCESSING") || !apiKey.trim()) return;
@@ -260,7 +325,7 @@ export default function App() {
   }, [apiKey, loadRun, run]);
 
   useEffect(() => {
-    if (tab === "results" && selectedRunId && run?.status === "COMPLETED") void loadResults(resultKind, resultSkip);
+    if ((tab === "results" || tab === "map") && selectedRunId && run?.status === "COMPLETED") void loadResults(resultKind, resultSkip);
   }, [tab, selectedRunId, run?.status]); // Search and paging run only on explicit user actions.
 
   useEffect(() => {
@@ -275,6 +340,46 @@ export default function App() {
     [summary],
   );
 
+  const mapMarkers = useMemo<MapMarker[]>(() => {
+    if (resultKind === "customers") {
+      return (customerPage?.items || []).flatMap((item) => {
+        const point = item.customer_location;
+        if (!point || !Number.isFinite(point.lat) || !Number.isFinite(point.lon)) return [];
+        return [{
+          id: "customer-" + String(item.row_number),
+          latitude: point.lat,
+          longitude: point.lon,
+          title: "Customer " + (item.customer_id || String(item.row_number)),
+          detail: "DP: " + (item.dp_id || "Missing") + " · Findings: " + String(item.issue_codes?.length || 0),
+          kind: "customer" as const,
+        }];
+      });
+    }
+    return (dpPage?.items || []).flatMap((item) => {
+      const point = item.dp_location_observed;
+      if (!point || !Number.isFinite(point.lat) || !Number.isFinite(point.lon)) return [];
+      return [{
+        id: "dp-" + item.dp_id,
+        latitude: point.lat,
+        longitude: point.lon,
+        title: "DP " + item.dp_id,
+        detail: "Coordinate state: " + item.coordinate_consistency + " · Customer rows: " + String(item.observed_row_count),
+        kind: "dp" as const,
+      }];
+    });
+  }, [customerPage, dpPage, resultKind]);
+
+  const mapCenter = useMemo<[number, number]>(() => {
+    if (!mapMarkers.length) return [7.8731, 80.7718];
+    return [
+      mapMarkers.reduce((sum, marker) => sum + marker.latitude, 0) / mapMarkers.length,
+      mapMarkers.reduce((sum, marker) => sum + marker.longitude, 0) / mapMarkers.length,
+    ];
+  }, [mapMarkers]);
+
+  const mapTileUrl = import.meta.env.VITE_MAP_TILE_URL ||
+    "https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png";
+
   async function submitUpload(event: FormEvent) {
     event.preventDefault();
     setError("");
@@ -282,8 +387,12 @@ export default function App() {
     if (!apiKey.trim()) { setError("Enter your GEOCHECK_API_KEY first."); return; }
     if (!file) { setError("Choose a CSV file first."); return; }
     if (!file.name.toLowerCase().endsWith(".csv")) { setError("Please choose a .csv file."); return; }
+    if (!csvPreview) { setError("Wait until the CSV header preview is ready."); return; }
+    const missingRequired = csvPreview.required_fields.filter((field) => !columnMapping[field]);
+    if (missingRequired.length) { setError("Map these required fields: " + missingRequired.join(", ")); return; }
     const form = new FormData();
     form.append("file", file);
+    form.append("column_mapping", JSON.stringify(columnMapping));
     setUploading(true);
     try {
       const response = await apiFetch("/api/validation-runs", { method: "POST", body: form });
@@ -292,6 +401,8 @@ export default function App() {
       setRun(data);
       setSummary(null);
       setFile(null);
+      setCsvPreview(null);
+      setColumnMapping({});
       setTab("upload");
       setNotice(`Accepted ${data.original_filename || "CSV"} into the validation queue.`);
       await loadRuns(false);
@@ -424,6 +535,15 @@ export default function App() {
           <MetricCard label="Rows with findings" value={formatNumber(summary?.rows_with_findings)} note="Issue codes present" icon={AlertTriangle} />
           <MetricCard label="Hard-error rows" value={formatNumber(summary?.rows_with_hard_errors)} note="Requires attention" icon={FileCheck2} />
         </section>
+        <section className="panel reference-panel"><div className="panel-heading"><div><h2>Trusted reference data</h2><p>Checks stay UNVERIFIED when approved boundary or mapping files are missing.</p></div><button className="secondary-button" onClick={() => void loadReferenceStatus()} disabled={!apiKey || loadingReferences}><RefreshCw size={14} className={loadingReferences ? "spinning" : ""} /> Refresh inventory</button></div>
+          <div className="reference-grid">
+            <ReferenceFileCard label="Country boundary" item={referenceStatus?.country_boundary} />
+            <ReferenceFileCard label="Administrative areas" item={referenceStatus?.administrative_areas} />
+            <ReferenceFileCard label="LEA areas" item={referenceStatus?.lea_areas} />
+            <ReferenceFileCard label="Provider regions" item={referenceStatus?.provider_regions} />
+          </div>
+          <div className="panel-footnote"><CircleHelp size={15} /> Add provider-approved files under backend/reference-data and restart the worker. Their SHA-256 digests are stored with each run.</div>
+        </section>
         <section className="content-grid">
           <article className="panel"><div className="panel-heading"><div><h2>Latest validation runs</h2><p>Select a run to view details and results.</p></div><span className="icon-bubble"><Activity size={18} /></span></div>
             {runs.length ? <div className="run-list">{runs.slice(0, 5).map((item) => <button key={item.run_id} className={`run-row ${selectedRunId === item.run_id ? "selected" : ""}`} onClick={() => { selectRun(item); setTab("upload"); }}>
@@ -440,11 +560,41 @@ export default function App() {
       </>}
 
       {tab === "upload" && <section className="upload-layout">
-        <article className="panel"><div className="panel-heading"><div><h2>Upload customer data CSV</h2><p>The server checks the header and queues the file for the worker.</p></div><span className="icon-bubble"><Upload size={18} /></span></div>
+        <article className="panel"><div className="panel-heading"><div><h2>Upload customer data CSV</h2><p>Preview and map the CSV columns before sending the file to the worker.</p></div><span className="icon-bubble"><Upload size={18} /></span></div>
           <form onSubmit={submitUpload} className="upload-form">
-            <label className="file-drop"><input type="file" accept=".csv,text/csv" onChange={(event) => setFile(event.target.files?.[0] || null)} /><span className="file-drop-icon"><Upload size={23} /></span><strong>{file?.name || "Choose a CSV file"}</strong><small>{file ? `${(file.size / (1024 * 1024)).toFixed(2)} MiB selected` : "Click to browse. Max upload size: 512 MiB by default."}</small></label>
-            <div className="notice-note"><CircleHelp size={16} /><span>CSV must contain customer and DP latitude/longitude columns. The API detects known header aliases or accepts a custom mapping through its API. Blank data rows are counted separately.</span></div>
-            <button type="submit" className="primary-button" disabled={!file || !apiKey.trim() || uploading}>{uploading ? <><LoaderCircle size={16} className="spinning" /> Uploading…</> : <><Upload size={16} /> Upload and queue validation</>}</button>
+            <label className="file-drop"><input type="file" accept=".csv,text/csv" onChange={(event) => { setCsvPreview(null); setColumnMapping({}); setFile(event.target.files?.[0] || null); }} /><span className="file-drop-icon"><Upload size={23} /></span><strong>{file?.name || "Choose a CSV file"}</strong><small>{file ? `${(file.size / (1024 * 1024)).toFixed(2)} MiB selected` : "Click to browse. Max upload size: 512 MiB by default."}</small></label>
+            {previewing && <div className="loading-state compact"><LoaderCircle size={16} className="spinning" /> Reading CSV column names…</div>}
+            {file && csvPreview && <div className="mapping-editor">
+              <div className="mapping-heading"><div><strong>Confirm column mapping</strong><span>Detected matches are pre-selected. All four coordinate fields are required.</span></div><span className="status-badge completed"><CheckCircle2 size={12} /> Preview ready</span></div>
+              <div className="mapping-grid">
+                {csvPreview.supported_fields.map((field) => {
+                  const required = csvPreview.required_fields.includes(field);
+                  return <label key={field} className="field-label mapping-field">
+                    <span>{field.replaceAll("_", " ")}{required && <b className="required-label">Required</b>}</span>
+                    <select value={columnMapping[field] || ""} required={required} onChange={(event) => {
+                      const selected = event.target.value;
+                      setColumnMapping((previous) => {
+                        const next = { ...previous };
+                        if (!selected) delete next[field];
+                        else {
+                          for (const [otherField, header] of Object.entries(next)) {
+                            if (otherField !== field && header === selected) delete next[otherField];
+                          }
+                          next[field] = selected;
+                        }
+                        return next;
+                      });
+                    }}>
+                      <option value="">Not mapped</option>
+                      {csvPreview.headers.map((header) => <option key={header} value={header}>{header}</option>)}
+                    </select>
+                  </label>;
+                })}
+              </div>
+              <div className="mapping-footnote"><CircleHelp size={14} /> {Object.keys(columnMapping).length} field(s) mapped. A source column can map to only one logical field. Do not map columns that the CSV does not contain.</div>
+            </div>}
+            <div className="notice-note"><CircleHelp size={16} /><span>The header preview reads only the first CSV record. Confirm the column mapping, then the worker checks the full file syntax, field lengths and row-count limit before writing results.</span></div>
+            <button type="submit" className="primary-button" disabled={!file || !apiKey.trim() || uploading || previewing || !csvPreview}>{uploading ? <><LoaderCircle size={16} className="spinning" /> Uploading…</> : <><Upload size={16} /> Upload and queue validation</>}</button>
           </form>
         </article>
         <article className="panel"><div className="panel-heading"><div><h2>Selected run</h2><p>Status updates automatically while the run is active.</p></div><button className="icon-button" title="Refresh selected run" onClick={() => run && void loadRun(run.run_id)} disabled={!run || !apiKey}><RefreshCw size={16} /></button></div>
@@ -455,7 +605,7 @@ export default function App() {
             <div className="progress-labels"><span>{run.stage || run.status}</span><span>{formatNumber(run.rows_processed)} processed</span></div>
             <dl className="detail-grid"><dt>Created</dt><dd>{formatDate(run.created_at)}</dd><dt>Rows seen</dt><dd>{formatNumber(run.source_rows_seen)}</dd><dt>Blank rows</dt><dd>{formatNumber(run.blank_rows_skipped)}</dd><dt>Rows with findings</dt><dd>{formatNumber(run.rows_with_findings)}</dd><dt>Hard errors</dt><dd>{formatNumber(run.rows_with_hard_errors)}</dd></dl>
             {run.status === "COMPLETED" && <button className="primary-button full-width" onClick={() => { setTab("results"); setResultKind("customers"); void loadResults("customers", 0); }}>Explore results <ChevronRight size={16} /></button>}
-            {run.status === "FAILED" && <p className="failure-note">This run failed. Automatic resume is not supported yet. Review the run status/API logs and submit the source CSV as a new run.</p>}
+            {run.status === "FAILED" && <p className="failure-note">This run failed after its configured retry attempts. Check the API/worker logs and source file before submitting a new run.</p>}
           </div> : <div className="empty-state"><div className="empty-icon"><Clock3 size={24} /></div><strong>No run selected</strong><span>Upload a CSV or select a recent run from the overview.</span></div>}
         </article>
         <article className="panel runs-table-panel"><div className="panel-heading"><div><h2>Validation run history</h2><p>{formatNumber(runTotal)} run(s) found.</p></div><button className="secondary-button" onClick={() => void loadRuns()} disabled={!apiKey || loadingRuns}><RefreshCw size={14} className={loadingRuns ? "spinning" : ""} /> Refresh</button></div>
@@ -479,17 +629,32 @@ export default function App() {
           loadingResults ? <div className="loading-state"><LoaderCircle size={19} className="spinning" /> Loading records…</div> :
           resultKind === "customers" ? <>
             <div className="table-scroll"><table><thead><tr><th>Source row</th><th>Customer</th><th>DP</th><th>Reported area</th><th>Distance check</th><th>Findings</th><th>DP assessment</th></tr></thead><tbody>
-              {(customerPage?.items || []).map((item) => <tr key={item.row_number}><td>{item.row_number}</td><td><strong>{item.customer_id || "Missing ID"}</strong><small>{item.source_values?.phone_number || "No phone value"}</small></td><td>{item.dp_id || "—"}</td><td><strong>{item.source_values?.reported_district || item.source_values?.reported_province || "Unreported"}</strong><small>{[item.source_values?.reported_province, item.source_values?.reported_region].filter(Boolean).join(" · ")}</small></td><td><StatusBadge status={item.issue_codes?.includes("CUSTOMER_DP_DISTANCE") ? "FAIL" : item.customer_location && item.dp_location_observed ? "PASS" : "UNVERIFIED"} /></td><td><div className="issue-tags">{item.issue_codes?.length ? item.issue_codes.map((code) => <span key={code} className="issue-tag">{code}</span>) : <span className="muted">No row findings</span>}</div></td><td><StatusBadge status={item.eligible_for_dp_assessment ? "ELIGIBLE" : "UNVERIFIED"} /></td></tr>)}
+              {(customerPage?.items || []).map((item) => <tr key={item.row_number}><td>{item.row_number}</td><td><strong>{item.customer_id || "Missing ID"}</strong><small>{item.source_values?.phone_number || "No phone value"}</small></td><td>{item.dp_id || "—"}</td><td><strong>{item.source_values?.reported_district || item.source_values?.reported_province || "Unreported"}</strong><small>{[item.source_values?.reported_province, item.source_values?.reported_region].filter(Boolean).join(" · ")}</small></td><td><StatusBadge status={item.checks?.customer_dp_distance?.status || "UNVERIFIED"} />{typeof item.checks?.customer_dp_distance?.distance_m === "number" && <small>{item.checks.customer_dp_distance.distance_m.toFixed(1)} m</small>}</td><td><div className="issue-tags">{item.issue_codes?.length ? item.issue_codes.map((code) => <span key={code} className="issue-tag">{code}</span>) : <span className="muted">No row findings</span>}</div></td><td><StatusBadge status={item.eligible_for_dp_assessment ? "ELIGIBLE" : "UNVERIFIED"} /></td></tr>)}
               {!customerPage?.items.length && <tr><td colSpan={7} className="empty-cell">No customer rows match these filters.</td></tr>}
             </tbody></table></div>
             <Pagination total={customerPage?.total || 0} skip={customerPage?.skip || 0} limit={customerPage?.limit || PAGE_SIZE} onChange={(skip) => void loadResults("customers", skip)} />
           </> : <>
-            <div className="table-scroll"><table><thead><tr><th>DP ID</th><th>Coordinate state</th><th>Observed rows</th><th>Valid coordinates</th><th>Eligible customers</th><th>Distance failures</th><th>Conflict observations</th></tr></thead><tbody>
-              {(dpPage?.items || []).map((item) => <tr key={item.dp_id}><td><strong>{item.dp_id}</strong><small>{item.dp_location_observed ? `${item.dp_location_observed.lat.toFixed(5)}, ${item.dp_location_observed.lon.toFixed(5)}` : "No valid point"}</small></td><td><StatusBadge status={item.coordinate_consistency} /></td><td>{formatNumber(item.observed_row_count)}</td><td>{formatNumber(item.valid_coordinate_observation_count)}</td><td>{formatNumber(item.eligible_customer_row_count)}</td><td>{formatNumber(item.eligible_distance_fail_row_count)}</td><td>{formatNumber(item.coordinate_conflict_observation_count)}</td></tr>)}
-              {!dpPage?.items.length && <tr><td colSpan={7} className="empty-cell">No DP records match these filters.</td></tr>}
+            <div className="table-scroll"><table><thead><tr><th>DP ID</th><th>Coordinate state</th><th>Observed rows</th><th>Valid coordinates</th><th>Eligible customer rows</th><th>Distance fail rate</th><th>Association evidence</th><th>Conflict observations</th></tr></thead><tbody>
+              {(dpPage?.items || []).map((item) => <tr key={item.dp_id}><td><strong>{item.dp_id}</strong><small>{item.dp_location_observed ? `${item.dp_location_observed.lat.toFixed(5)}, ${item.dp_location_observed.lon.toFixed(5)}` : "No valid point"}</small></td><td><StatusBadge status={item.coordinate_consistency} /></td><td>{formatNumber(item.observed_row_count)}</td><td>{formatNumber(item.valid_coordinate_observation_count)}</td><td>{formatNumber(item.eligible_customer_row_count)}<small>{formatNumber(item.eligible_distance_assessed_row_count)} distance checks assessed; {formatNumber(item.eligible_distance_pass_row_count)} passed</small></td><td>{item.eligible_distance_fail_percentage === null || item.eligible_distance_fail_percentage === undefined ? "—" : item.eligible_distance_fail_percentage.toFixed(1) + "%" }<small>{formatNumber(item.eligible_distance_fail_row_count)} failure row(s)</small></td><td><strong>{item.association_evidence === "INSUFFICIENT_ELIGIBLE_ROWS" ? "Insufficient evidence" : item.association_evidence === "DISTANCE_FAILURES_OBSERVED" ? "Distance failures observed" : "No distance failures observed"}</strong><small>No approved final pass/fail threshold</small></td><td>{formatNumber(item.coordinate_conflict_observation_count)}</td></tr>)}
+              {!dpPage?.items.length && <tr><td colSpan={8} className="empty-cell">No DP records match these filters.</td></tr>}
             </tbody></table></div>
             <Pagination total={dpPage?.total || 0} skip={dpPage?.skip || 0} limit={dpPage?.limit || PAGE_SIZE} onChange={(skip) => void loadResults("dps", skip)} />
           </>}
+      </section>}
+
+      {tab === "map" && <section className="panel results-panel">
+        <div className="panel-heading"><div><h2>Customer and DP map</h2><p>Only points from the current results page are drawn; map markers are not a national density estimate.</p></div><span className="icon-bubble"><MapPinned size={18} /></span></div>
+        <div className="toolbar"><label className="field-label">Validation run<select value={selectedRunId} onChange={(event) => { const selected = runs.find((item) => item.run_id === event.target.value); if (selected) selectRun(selected); }}><option value="">Choose a run</option>{runs.map((item) => <option key={item.run_id} value={item.run_id}>{item.original_filename || item.run_id} — {item.status}</option>)}</select></label>
+          <div className="toggle-group"><button className={resultKind === "customers" ? "selected" : ""} onClick={() => void loadResults("customers", 0)}>Customers</button><button className={resultKind === "dps" ? "selected" : ""} onClick={() => void loadResults("dps", 0)}>DPs</button></div>
+          <button className="secondary-button" onClick={() => void loadResults(resultKind, resultSkip)} disabled={!canReadResults || loadingResults}><RefreshCw size={14} /> Refresh map points</button>
+        </div>
+        {!canReadResults ? <div className="empty-state"><div className="empty-icon"><MapPinned size={24} /></div><strong>Select a completed run</strong><span>Map points become available after validation completes.</span></div> :
+          loadingResults ? <div className="loading-state"><LoaderCircle size={19} className="spinning" /> Loading map points…</div> :
+          <><div className="map-legend"><span><i className="map-dot customer-dot" /> Customer points</span><span><i className="map-dot dp-dot" /> DP points</span><span>{mapMarkers.length} mapped point(s) on this page</span></div>
+            {mapMarkers.length ? <MapView key={selectedRunId + "-" + resultKind + "-" + resultSkip} markers={mapMarkers} center={mapCenter} tileUrl={mapTileUrl} /> : <div className="empty-state"><strong>No usable coordinates on this page</strong><span>Change the result page or inspect the coordinate findings.</span></div>}
+            <Pagination total={currentTotal} skip={currentSkip} limit={currentPage?.limit || PAGE_SIZE} onChange={(skip) => void loadResults(resultKind, skip)} />
+          </>}
+        <div className="panel-footnote"><ShieldCheck size={15} /> The default OpenStreetMap tile service receives map viewport requests. Use synthetic data here unless your provider approves that external map service, or configure a company-approved tile server with VITE_MAP_TILE_URL.</div>
       </section>}
 
       {tab === "hierarchy" && <section className="panel results-panel">
@@ -511,6 +676,14 @@ export default function App() {
 
       <footer className="footer"><span>GeoCheck Next · Local validation workspace</span><span><ShieldCheck size={13} /> Keep real customer data restricted</span></footer>
     </main>
+  </div>;
+}
+
+function ReferenceFileCard({ label, item }: { label: string; item?: ReferenceFileStatus }) {
+  return <div className="reference-card">
+    <div><strong>{label}</strong><StatusBadge status={item?.status || "MISSING"} /></div>
+    <span>{formatNumber(item?.feature_or_mapping_count)} feature/mapping record(s)</span>
+    <small>{item?.sha256 ? "SHA-256 " + item.sha256.slice(0, 12) + "…" : "No approved reference file loaded"}</small>
   </div>;
 }
 

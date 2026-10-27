@@ -248,6 +248,16 @@ class BatchProcessorTests(unittest.TestCase):
                     batch_size=0,
                 )
 
+    def test_missing_dp_coordinates_are_not_counted_as_distance_passes(self):
+        rows = [self.make_row("C-1", dp_lat="")]
+        result, _, customers, dps = self.run_rows(rows, batch_size=1)
+        self.assertEqual(result["rows_processed"], 1)
+        self.assertEqual(len(customers.documents), 1)
+        self.assertEqual(dps.documents[0]["eligible_customer_row_count"], 1)
+        self.assertEqual(dps.documents[0]["eligible_distance_assessed_row_count"], 0)
+        self.assertEqual(dps.documents[0]["eligible_distance_pass_row_count"], 0)
+        self.assertEqual(dps.documents[0]["eligible_distance_fail_row_count"], 0)
+
 
 if __name__ == "__main__":
     unittest.main()

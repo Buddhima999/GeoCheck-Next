@@ -40,6 +40,37 @@ def utc_now() -> datetime:
     return datetime.now(timezone.utc)
 
 
+def _search_terms_normalized(result: Mapping[str, Any]) -> list[str]:
+    """Index normalized ID, phone and address terms for predictable-prefix searching."""
+    source_values = result.get("source_values", {})
+    if not isinstance(source_values, Mapping):
+        source_values = {}
+    values = (
+        result.get("customer_id"),
+        result.get("dp_id"),
+        source_values.get("phone_number"),
+        source_values.get("address"),
+    )
+    terms: set[str] = set()
+    for value in values:
+        text = str(value or "").casefold().strip()
+        if not text:
+            continue
+        compact = "".join(character for character in text if character.isalnum())
+        if compact:
+            terms.add(compact)
+        token: list[str] = []
+        for character in text:
+            if character.isalnum():
+                token.append(character)
+            elif token:
+                terms.add("".join(token))
+                token = []
+        if token:
+            terms.add("".join(token))
+    return sorted(terms)
+
+
 def eligible_for_dp_assessment(result: Mapping[str, Any]) -> bool:
     """Whether this row's customer location can be used for DP association scoring."""
     location = result.get("customer_location")
@@ -62,6 +93,97 @@ def _chunks(items, size: int):
 
 def _collection_rows(collection: Collection, query: dict[str, Any], projection: dict[str, int]) -> list[dict[str, Any]]:
     return list(collection.find(query, projection))
+
+
+def _mark_customer_id_conflicts(
+    *,
+    run_id: str,
+    customer_records: Collection,
+    batch_size: int = 500,
+) -> dict[str, int]:
+    """Mark source rows whose normalized customer ID has conflicting signatures.
+
+    MongoDB performs cross-row grouping with disk spill enabled. The cursor and update
+    batches stay bounded so this works with large imports without loading all rows
+    into Python memory. In-memory collection fakes skip this; live MongoDB tests cover it.
+    """
+    if not hasattr(customer_records, "aggregate"):
+        return {"affected_rows": 0, "rows_newly_with_findings": 0}
+    if batch_size < 1:
+        raise ValueError("customer conflict batch_size must be at least 1")
+
+    pipeline = [
+        {"$match": {"run_id": run_id, "customer_id_normalized": {"$ne": None}}},
+        {
+            "$group": {
+                "_id": {
+                    "customer_id_normalized": "$customer_id_normalized",
+                    "latitude": {"$round": ["$customer_location.lat", 5]},
+                    "longitude": {"$round": ["$customer_location.lon", 5]},
+                    "address": {
+                        "$toLower": {
+                            "$trim": {"input": {"$ifNull": ["$source_values.address", ""]}}
+                        }
+                    },
+                    "phone": {"$ifNull": ["$phone_normalized", ""]},
+                },
+                "signature_rows": {"$sum": 1},
+            }
+        },
+        {
+            "$group": {
+                "_id": "$_id.customer_id_normalized",
+                "distinct_signatures": {"$sum": 1},
+            }
+        },
+        {"$match": {"distinct_signatures": {"$gt": 1}}},
+        {"$project": {"_id": 0, "customer_id_normalized": "$_id"}},
+    ]
+    cursor = customer_records.aggregate(pipeline, allowDiskUse=True).batch_size(batch_size)
+    conflict_ids: list[str] = []
+    affected_rows = 0
+    newly_finding_rows = 0
+    finding = {
+        "code": "CUSTOMER_ID_CONFLICT",
+        "status": FAIL,
+        "severity": "warning",
+        "message": "Customer ID occurs on multiple rows with different coordinates or identifying details.",
+    }
+
+    def apply_batch(ids: list[str]) -> None:
+        nonlocal affected_rows, newly_finding_rows
+        if not ids:
+            return
+        base_query = {"run_id": run_id, "customer_id_normalized": {"$in": ids}}
+        newly_finding_rows += customer_records.count_documents(
+            {**base_query, "issue_codes": []}
+        )
+        result = customer_records.update_many(
+            {**base_query, "issue_codes": {"$ne": "CUSTOMER_ID_CONFLICT"}},
+            {
+                "$addToSet": {
+                    "issue_codes": "CUSTOMER_ID_CONFLICT",
+                    "findings": finding,
+                }
+            },
+        )
+        affected_rows += int(getattr(result, "modified_count", 0))
+
+    for item in cursor:
+        normalized_id = item.get("customer_id_normalized")
+        if normalized_id:
+            conflict_ids.append(str(normalized_id))
+        if len(conflict_ids) >= batch_size:
+            apply_batch(conflict_ids)
+            conflict_ids = []
+    apply_batch(conflict_ids)
+
+    return {
+        "affected_rows": affected_rows,
+        "rows_newly_with_findings": newly_finding_rows,
+    }
+
+
 
 
 def _valid_point(value: object) -> tuple[float, float] | None:
@@ -90,6 +212,8 @@ def _group_dp_observations(results: list[dict[str, Any]]) -> dict[str, dict[str,
                 "row_count": 0,
                 "valid_locations": [],
                 "eligible_customer_rows": 0,
+                "eligible_distance_assessed_rows": 0,
+                "eligible_distance_pass_rows": 0,
                 "eligible_distance_fail_rows": 0,
             },
         )
@@ -102,8 +226,14 @@ def _group_dp_observations(results: list[dict[str, Any]]) -> dict[str, dict[str,
         if eligible_for_dp_assessment(result):
             group["eligible_customer_rows"] += 1
             distance_check = checks.get("customer_dp_distance", {})
-            if isinstance(distance_check, Mapping) and distance_check.get("status") == FAIL:
-                group["eligible_distance_fail_rows"] += 1
+            if isinstance(distance_check, Mapping):
+                distance_status = distance_check.get("status")
+                if distance_status in {PASS, FAIL}:
+                    group["eligible_distance_assessed_rows"] += 1
+                    if distance_status == PASS:
+                        group["eligible_distance_pass_rows"] += 1
+                    else:
+                        group["eligible_distance_fail_rows"] += 1
     return groups
 
 
@@ -150,6 +280,8 @@ def _make_dp_updates(
             "valid_coordinate_observation_count": len(group["valid_locations"]),
             "coordinate_conflict_observation_count": outlier_count,
             "eligible_customer_row_count": group["eligible_customer_rows"],
+            "eligible_distance_assessed_row_count": group.get("eligible_distance_assessed_rows", 0),
+            "eligible_distance_pass_row_count": group.get("eligible_distance_pass_rows", 0),
             "eligible_distance_fail_row_count": group["eligible_distance_fail_rows"],
         }
 
@@ -167,6 +299,8 @@ def _make_dp_updates(
             "valid_coordinate_observation_count": len(group["valid_locations"]),
             "coordinate_conflict_observation_count": outlier_count,
             "eligible_customer_row_count": group["eligible_customer_rows"],
+            "eligible_distance_assessed_row_count": group.get("eligible_distance_assessed_rows", 0),
+            "eligible_distance_pass_row_count": group.get("eligible_distance_pass_rows", 0),
             "eligible_distance_fail_row_count": group["eligible_distance_fail_rows"],
         }
         update: dict[str, Any] = {
@@ -310,6 +444,12 @@ def process_csv_file(
                             "dp_id": result.get("dp_id"),
                             "dp_id_normalized": result.get("dp_id_normalized"),
                             "source_values": result.get("source_values", {}),
+                            "phone_normalized": "".join(
+                                character
+                                for character in str((result.get("source_values", {}) or {}).get("phone_number", "") or "")
+                                if character.isdigit()
+                            ),
+                            "search_terms_normalized": _search_terms_normalized(result),
                             "customer_location": result.get("customer_location"),
                             "dp_location_observed": result.get("dp_location_observed"),
                             "checks": result.get("checks", {}),
@@ -345,6 +485,25 @@ def process_csv_file(
                 for code, value in issue_delta.items():
                     progress_update["$inc"][f"issue_counts.{code}"] = value
                 validation_runs.update_one({"run_id": run_id}, progress_update)
+
+        customer_conflicts = _mark_customer_id_conflicts(
+            run_id=run_id,
+            customer_records=customer_records,
+        )
+        conflict_rows = customer_conflicts["affected_rows"]
+        if conflict_rows:
+            counters["issue:CUSTOMER_ID_CONFLICT"] += conflict_rows
+            counters["rows_with_findings"] += customer_conflicts["rows_newly_with_findings"]
+            validation_runs.update_one(
+                {"run_id": run_id},
+                {
+                    "$inc": {
+                        "issue_counts.CUSTOMER_ID_CONFLICT": conflict_rows,
+                        "rows_with_findings": customer_conflicts["rows_newly_with_findings"],
+                    },
+                    "$set": {"last_progress_at": utc_now()},
+                },
+            )
 
         completed = utc_now()
         summary = {

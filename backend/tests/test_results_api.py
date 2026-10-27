@@ -47,7 +47,11 @@ def matches(document, query):
             if "$regex" in expected:
                 import re
                 flags = re.IGNORECASE if expected.get("$options") == "i" else 0
-                if actual is None or re.search(expected["$regex"], str(actual), flags) is None:
+                candidates = actual if isinstance(actual, list) else [actual]
+                if actual is None or not any(
+                    re.search(expected["$regex"], str(candidate), flags) is not None
+                    for candidate in candidates
+                ):
                     return False
             if "$exists" in expected and ((actual is not None) != bool(expected["$exists"])):
                 return False
@@ -116,7 +120,7 @@ class ValidationResultsApiTests(unittest.TestCase):
         self.customers = FakeCollection([
             {
                 "run_id": "run-1", "row_number": 2, "customer_id": "SYN-C-1",
-                "dp_id": "DP-1", "source_values": {
+                "dp_id": "DP-1", "search_terms_normalized": ["sync1", "syn", "c", "1", "dp1", "dp", "synthetic", "street", "syntheticstreet", "0710000000"], "source_values": {
                     "address": "Synthetic street", "phone_number": "0710000000",
                     "reported_province": "Synthetic province",
                 },
@@ -127,7 +131,7 @@ class ValidationResultsApiTests(unittest.TestCase):
             },
             {
                 "run_id": "run-1", "row_number": 3, "customer_id": "SYN-C-2",
-                "dp_id": "DP-1", "source_values": {"address": "Other synthetic street"},
+                "dp_id": "DP-1", "search_terms_normalized": ["sync2", "syn", "c", "2", "dp1", "dp", "other", "synthetic", "street", "othersyntheticstreet"], "source_values": {"address": "Other synthetic street"},
                 "customer_location": None, "dp_location_observed": {"lat": 6.91, "lon": 79.81},
                 "issue_codes": ["COORD_MISSING"], "findings": [],
                 "has_hard_error": True, "eligible_for_dp_assessment": False,
@@ -139,7 +143,7 @@ class ValidationResultsApiTests(unittest.TestCase):
                 "dp_location_observed": {"lat": 6.91, "lon": 79.81},
                 "coordinate_consistency": "CONFLICT", "observed_row_count": 2,
                 "valid_coordinate_observation_count": 2, "coordinate_conflict_observation_count": 1,
-                "eligible_customer_row_count": 1, "eligible_distance_fail_row_count": 1,
+                "eligible_customer_row_count": 1, "eligible_distance_assessed_row_count": 1, "eligible_distance_pass_row_count": 0, "eligible_distance_fail_row_count": 1,
                 "issue_codes": ["DP_COORD_CONFLICT"],
             }
         ])
@@ -185,7 +189,12 @@ class ValidationResultsApiTests(unittest.TestCase):
         )
         self.assertEqual(response.status_code, 200, response.text)
         self.assertEqual(response.json()["total"], 1)
-        self.assertEqual(response.json()["items"][0]["dp_id"], "DP-1")
+        item = response.json()["items"][0]
+        self.assertEqual(item["dp_id"], "DP-1")
+        self.assertEqual(item["eligible_distance_pass_row_count"], 0)
+        self.assertEqual(item["eligible_distance_fail_percentage"], 100.0)
+        self.assertEqual(item["association_evidence"], "DISTANCE_FAILURES_OBSERVED")
+        self.assertFalse(item["association_threshold_configured"])
 
     def test_summary_uses_persisted_counts(self):
         response = self.client.get("/api/validation-runs/run-1/summary", headers=self.headers)

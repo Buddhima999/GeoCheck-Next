@@ -135,6 +135,59 @@ class ValidationUploadApiTests(unittest.TestCase):
         )
         self.assertEqual(response.status_code, 404)
 
+    def test_preview_detects_headers_without_creating_a_validation_run(self):
+        response = self.client.post(
+            "/api/validation-runs/preview",
+            headers=self.headers,
+            files={"file": ("synthetic.csv", CSV_BYTES, "text/csv")},
+        )
+        self.assertEqual(response.status_code, 200, response.text)
+        body = response.json()
+        self.assertEqual(body["headers"][0], "customer_id")
+        self.assertEqual(body["detected_mapping"]["customer_latitude"], "customer_latitude")
+        self.assertIn("customer_latitude", body["required_fields"])
+        self.assertEqual(len(self.runs.documents), 0)
+
+    def test_preview_keeps_quoted_commas_inside_one_header(self):
+        content = (
+            b'customer_id,"address, full",customer_latitude,customer_longitude,dp_latitude,dp_longitude\n'
+            b'SYN-C-1,"Synthetic road",6.9,79.8,6.91,79.81\n'
+        )
+        response = self.client.post(
+            "/api/validation-runs/preview",
+            headers=self.headers,
+            files={"file": ("synthetic.csv", content, "text/csv")},
+        )
+        self.assertEqual(response.status_code, 200, response.text)
+        self.assertEqual(response.json()["headers"][1], "address, full")
+
+    def test_preview_rejects_duplicate_headers(self):
+        content = (
+            b"customer_latitude,Customer Latitude,customer_longitude,dp_latitude,dp_longitude\n"
+            b"6.9,6.9,79.8,6.91,79.81\n"
+        )
+        response = self.client.post(
+            "/api/validation-runs/preview",
+            headers=self.headers,
+            files={"file": ("synthetic.csv", content, "text/csv")},
+        )
+        self.assertEqual(response.status_code, 400)
+        self.assertIn("duplicate", response.json()["detail"].lower())
+
+    def test_preview_requires_api_key(self):
+        response = self.client.post(
+            "/api/validation-runs/preview",
+            files={"file": ("synthetic.csv", CSV_BYTES, "text/csv")},
+        )
+        self.assertEqual(response.status_code, 401)
+
+    def test_example_api_key_does_not_enable_upload_endpoints(self):
+        with patch.object(settings, "api_key", "replace-with-a-long-random-secret"):
+            response = self.upload()
+        self.assertEqual(response.status_code, 503)
+        self.assertEqual(len(self.runs.documents), 0)
+        self.assertEqual(list(self.upload_dir.iterdir()), [])
+
 
 if __name__ == "__main__":
     unittest.main()

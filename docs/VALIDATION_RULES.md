@@ -45,5 +45,7 @@ The proposed 150 m coastal tolerance must be applied using geometry in a suitabl
 - Customer and DP metrics report passing, failing and unverified counts.
 - DP physical-location quality and DP-customer association quality are separate.
 - Customers with confirmed location errors are ineligible to count as evidence against DP association quality.
+- Customer IDs are checked across the completed source run after batch processing. Rows sharing an ID are marked `CUSTOMER_ID_CONFLICT` when rounded coordinates (5 decimal places), trimmed/case-normalized address, or phone digits differ; identical repeated signatures are preserved without this conflict finding.
+- Provider-region checks stay `UNVERIFIED` when the authoritative mapping is missing or ambiguous. The app does not invent a winning region.
 - Define minimum eligible DP customers and required pass percentage before implementing final aggregate DP pass/fail.
 - Dashboard totals must reconcile with source rows, distinct entities and findings.
