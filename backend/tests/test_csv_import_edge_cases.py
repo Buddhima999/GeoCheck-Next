@@ -79,6 +79,26 @@ class CSVImportEdgeCaseTests(unittest.TestCase):
         self.assertEqual(len(preview["sample_rows"]), 1)
         self.assertEqual(preview["detected_mapping"]["customer_id"], "customer_id")
 
+    def test_does_not_mix_customer_and_dp_coordinate_columns(self):
+        headers = ["Customer Latitude", "Customer Longitude", "DP Latitude", "DP Longitude"]
+        detected = detect_mapping(headers)
+        self.assertEqual(detected["customer_latitude"], "Customer Latitude")
+        self.assertEqual(detected["customer_longitude"], "Customer Longitude")
+        self.assertEqual(detected["dp_latitude"], "DP Latitude")
+        self.assertEqual(detected["dp_longitude"], "DP Longitude")
+
+    def test_can_include_blank_rows_for_accurate_source_row_counts(self):
+        source = io.StringIO(
+            ",".join(HEADERS) + "\\n"
+            "C-1,6.9,79.8,6.91,79.81\\n"
+            ",,,,\\n"
+            "C-2,6.8,79.7,6.81,79.71\\n"
+        )
+        rows = list(iter_mapped_rows(source, mapping(), include_blank_rows=True))
+        self.assertEqual([row["row_number"] for row in rows], [2, 3, 4])
+        self.assertTrue(rows[1]["is_blank"])
+        self.assertFalse(rows[0]["is_blank"])
+
     def test_rejects_missing_header(self):
         with self.assertRaisesRegex(ValueError, "no header row"):
             list(iter_mapped_rows(io.StringIO(""), mapping()))
