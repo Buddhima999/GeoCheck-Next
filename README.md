@@ -81,7 +81,7 @@ Generated files are written to `test-data/generated/` and ignored by Git because
 - Sanitized sample of the actual CSV with real headers (remove names, phone numbers and precise customer coordinates; preserve data types and issue patterns).
 - Provider's official operational-region mapping.
 - Approved telephone-area/LEA reference table.
-- Meaning/units of overhead distance (line distance is confirmed as metres).
+- Approved tolerance for `overhead_distance_m` comparison (its meaning is confirmed as straight-line customer-to-DP distance; the current 25 m tolerance is provisional).
 - Agreed DP association thresholds and duplicate-ID policy.
 
 See `docs/PHASE_0_DATA_CONTRACT.md`, `docs/VALIDATION_RULES.md` and `backend/tests/README.md`.
