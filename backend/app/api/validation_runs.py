@@ -28,10 +28,10 @@ def utc_now() -> datetime:
 def require_api_key(x_api_key: str | None = Header(default=None, alias="X-API-Key")) -> None:
     """Fail closed: data endpoints stay disabled until a secret is configured."""
     expected = (settings.api_key or "").strip()
-    if not expected:
+    if not expected or secrets.compare_digest(expected, "replace-with-a-long-random-secret"):
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            detail="CSV validation endpoints are disabled until GEOCHECK_API_KEY is configured.",
+            detail="CSV validation endpoints are disabled until GEOCHECK_API_KEY is replaced with your own secret.",
         )
     if not x_api_key or not secrets.compare_digest(x_api_key, expected):
         raise HTTPException(
