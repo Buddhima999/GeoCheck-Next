@@ -189,7 +189,12 @@ class ValidationResultsApiTests(unittest.TestCase):
         )
         self.assertEqual(response.status_code, 200, response.text)
         self.assertEqual(response.json()["total"], 1)
-        self.assertEqual(response.json()["items"][0]["dp_id"], "DP-1")
+        item = response.json()["items"][0]
+        self.assertEqual(item["dp_id"], "DP-1")
+        self.assertEqual(item["eligible_distance_pass_row_count"], 0)
+        self.assertEqual(item["eligible_distance_fail_percentage"], 100.0)
+        self.assertEqual(item["association_evidence"], "DISTANCE_FAILURES_OBSERVED")
+        self.assertFalse(item["association_threshold_configured"])
 
     def test_summary_uses_persisted_counts(self):
         response = self.client.get("/api/validation-runs/run-1/summary", headers=self.headers)
