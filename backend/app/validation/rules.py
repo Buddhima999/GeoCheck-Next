@@ -54,6 +54,141 @@ def haversine_m(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
     return 2 * radius_m * math.asin(math.sqrt(min(1.0, a)))
 
 
+
+# TRCSL's published PSTN numbering manual lists these Sri Lankan geographic
+# fixed-line area codes. A code indicates a numbering area, not a subscriber's
+# exact address or live location.
+SL_LANDLINE_AREAS: dict[str, tuple[str, str, str, tuple[str, ...]]] = {
+    "011": ("Colombo", "Colombo", "Western", ("Colombo", "Sri Jayawardenepura Kotte", "Kotte")),
+    "021": ("Jaffna", "Jaffna", "Northern", ("Jaffna",)),
+    "023": ("Mannar", "Mannar", "Northern", ("Mannar",)),
+    "024": ("Vavuniya", "Vavuniya", "Northern", ("Vavuniya", "Vavunia")),
+    "025": ("Anuradhapura", "Anuradhapura", "North Central", ("Anuradhapura", "Anuradapura")),
+    "026": ("Trincomalee", "Trincomalee", "Eastern", ("Trincomalee", "Trincomali")),
+    "027": ("Polonnaruwa", "Polonnaruwa", "North Central", ("Polonnaruwa",)),
+    "031": ("Negombo", "Gampaha", "Western", ("Negombo",)),
+    "032": ("Chilaw", "Puttalam", "North Western", ("Chilaw",)),
+    "033": ("Gampaha", "Gampaha", "Western", ("Gampaha",)),
+    "034": ("Kalutara", "Kalutara", "Western", ("Kalutara", "Kaluthara")),
+    "035": ("Kegalle", "Kegalle", "Sabaragamuwa", ("Kegalle",)),
+    "036": ("Avissawella", "Colombo", "Western", ("Avissawella",)),
+    "037": ("Kurunegala", "Kurunegala", "North Western", ("Kurunegala",)),
+    "038": ("Panadura", "Kalutara", "Western", ("Panadura",)),
+    "041": ("Matara", "Matara", "Southern", ("Matara",)),
+    "045": ("Ratnapura", "Ratnapura", "Sabaragamuwa", ("Ratnapura", "Rathnapura")),
+    "047": ("Hambantota", "Hambantota", "Southern", ("Hambantota",)),
+    "051": ("Hatton", "Nuwara Eliya", "Central", ("Hatton",)),
+    "052": ("Nuwara Eliya", "Nuwara Eliya", "Central", ("Nuwara Eliya",)),
+    "054": ("Nawalapitiya", "Kandy", "Central", ("Nawalapitiya",)),
+    "055": ("Badulla", "Badulla", "Uva", ("Badulla",)),
+    "057": ("Bandarawela", "Badulla", "Uva", ("Bandarawela",)),
+    "063": ("Ampara", "Ampara", "Eastern", ("Ampara",)),
+    "065": ("Batticaloa", "Batticaloa", "Eastern", ("Batticaloa", "Batticola")),
+    "066": ("Matale", "Matale", "Central", ("Matale",)),
+    "067": ("Kalmunai", "Ampara", "Eastern", ("Kalmunai",)),
+    "081": ("Kandy", "Kandy", "Central", ("Kandy",)),
+    "091": ("Galle", "Galle", "Southern", ("Galle",)),
+}
+
+_DISTRICT_ALIASES = {
+    "colombo": "Colombo",
+    "gampaha": "Gampaha",
+    "kalutara": "Kalutara",
+    "puttalam": "Puttalam",
+    "kegalle": "Kegalle",
+    "kurunegala": "Kurunegala",
+    "matara": "Matara",
+    "ratnapura": "Ratnapura",
+    "hambantota": "Hambantota",
+    "nuwara eliya": "Nuwara Eliya",
+    "badulla": "Badulla",
+    "ampara": "Ampara",
+    "batticaloa": "Batticaloa",
+    "matale": "Matale",
+    "kandy": "Kandy",
+    "galle": "Galle",
+    "jaffna": "Jaffna",
+    "mannar": "Mannar",
+    "vavuniya": "Vavuniya",
+    "vavunia": "Vavuniya",
+    "anuradhapura": "Anuradhapura",
+    "anuradapura": "Anuradhapura",
+    "trincomalee": "Trincomalee",
+    "polonnaruwa": "Polonnaruwa",
+}
+
+_PROVINCE_ALIASES = {
+    "western": "Western",
+    "central": "Central",
+    "southern": "Southern",
+    "northern": "Northern",
+    "eastern": "Eastern",
+    "north central": "North Central",
+    "north western": "North Western",
+    "uva": "Uva",
+    "sabaragamuwa": "Sabaragamuwa",
+}
+
+
+def _normalise_location_text(value: object) -> str:
+    return re.sub(r"[^a-z0-9]+", " ", str(value or "").casefold()).strip()
+
+
+def _infer_sri_lanka_landline_area(value: object) -> dict[str, str]:
+    """Parse a Sri Lankan national/international fixed-line number and infer its numbering area."""
+    raw = str(value or "").strip()
+    digits = re.sub(r"\D", "", raw)
+    if digits.startswith("0094") and len(digits) == 13:
+        digits = "0" + digits[4:]
+    elif digits.startswith("94") and len(digits) == 11:
+        digits = "0" + digits[2:]
+
+    if not digits:
+        return {"kind": "missing", "normalized_number": ""}
+    if len(digits) == 10 and digits.startswith("07"):
+        return {"kind": "mobile", "normalized_number": digits}
+    if len(digits) != 10 or not digits.startswith("0"):
+        return {"kind": "invalid", "normalized_number": digits}
+    area_code = digits[:3]
+    if area_code not in SL_LANDLINE_AREAS:
+        return {"kind": "unknown_area", "normalized_number": digits, "area_code": area_code}
+    area_name, district, province, _aliases = SL_LANDLINE_AREAS[area_code]
+    return {
+        "kind": "landline",
+        "normalized_number": digits,
+        "area_code": area_code,
+        "area_name": area_name,
+        "district": district,
+        "province": province,
+    }
+
+
+def _area_codes_mentioned(text: object) -> set[str]:
+    normalised = " " + _normalise_location_text(text) + " "
+    matches: set[str] = set()
+    for code, (area_name, _district, _province, aliases) in SL_LANDLINE_AREAS.items():
+        for alias in (area_name, *aliases):
+            normalised_alias = _normalise_location_text(alias)
+            if normalised_alias and f" {normalised_alias} " in normalised:
+                matches.add(code)
+                break
+    return matches
+
+
+def _normalise_district(value: object) -> str | None:
+    normalised = _normalise_location_text(value)
+    if normalised.endswith(" district"):
+        normalised = normalised[:-9].strip()
+    return _DISTRICT_ALIASES.get(normalised)
+
+
+def _normalise_province(value: object) -> str | None:
+    normalised = _normalise_location_text(value)
+    if normalised.endswith(" province"):
+        normalised = normalised[:-9].strip()
+    return _PROVINCE_ALIASES.get(normalised)
+
+
 def _check(status: str, *, distance_m: float | None = None, message: str = "") -> dict[str, object]:
     result: dict[str, object] = {"status": status}
     if distance_m is not None:
@@ -186,18 +321,6 @@ def validate_row(
             elif outcome is False:
                 add("ADDRESS_ZONE_MISMATCH", FAIL, "warning", "Coordinates conflict with the resolved address zone.", "address")
 
-        phone = re.sub(r"[^0-9+]", "", str(values.get("phone_number", "") or ""))
-        if not phone:
-            checks["phone_area"] = _check(NOT_APPLICABLE, message="Router numbers are not assumed to be geographic telephone numbers.")
-        elif phone.startswith("07") or phone.startswith("+947"):
-            checks["phone_area"] = _check(UNVERIFIED, message="Mobile numbers do not establish a town-level location.")
-        elif phone_area_check is None:
-            checks["phone_area"] = _check(UNVERIFIED, message="Approved LEA/area-code reference is not configured.")
-        else:
-            outcome = phone_area_check(phone, c_lat, c_lon)
-            checks["phone_area"] = _check(UNVERIFIED if outcome is None else PASS if outcome else FAIL)
-            if outcome is False:
-                add("PHONE_AREA_MISMATCH", FAIL, "warning", "Phone area reference conflicts with customer location.", "phone_number")
 
         reported_geography_fields = ("reported_province", "reported_district", "reported_region")
         has_reported_geography = any(str(values.get(field, "") or "").strip() for field in reported_geography_fields)
@@ -210,6 +333,151 @@ def validate_row(
             checks["reported_geography"] = _check(UNVERIFIED if outcome is None else PASS if outcome else FAIL)
             if outcome is False:
                 add("REPORTED_GEOGRAPHY_MISMATCH", FAIL, "warning", "Reported geography conflicts with resolved assignment.")
+
+    # The upload's router_number is the customer's fixed-line telephone number.
+    # Keep format parsing separate from address/coordinate consistency validation.
+    area_info = _infer_sri_lanka_landline_area(router_number)
+    area_kind = area_info["kind"]
+    if area_kind == "landline":
+        checks["router_number_format"] = _check(
+            PASS,
+            message=(
+                f"Valid 10-digit Sri Lankan fixed-line format; area code "
+                f"{area_info['area_code']} maps to {area_info['area_name']}. "
+                "A numbering area is not an exact or live subscriber location."
+            ),
+        )
+    elif area_kind == "unknown_area":
+        checks["router_number_format"] = _check(
+            UNVERIFIED,
+            message=(
+                f"Number has 10 digits, but area code {area_info.get('area_code', '')} "
+                "is not in the configured list of Sri Lankan geographic fixed-line codes."
+            ),
+        )
+        add(
+            "ROUTER_NUMBER_AREA_CODE_UNVERIFIED", UNVERIFIED, "info",
+            "The 10-digit number's area code is not recognised by the configured Sri Lankan landline reference.",
+            "router_number",
+        )
+    elif area_kind == "missing":
+        checks["router_number_format"] = _check(FAIL, message="Customer fixed-line telephone number is missing.")
+    else:
+        reason = (
+            "A mobile number was supplied, but this field requires a Sri Lankan fixed-line number."
+            if area_kind == "mobile"
+            else "Expected a 10-digit Sri Lankan fixed-line number such as 0112345211 or an international +94 format."
+        )
+        checks["router_number_format"] = _check(FAIL, message=reason)
+        if area_kind != "missing":
+            add(
+                "ROUTER_NUMBER_FORMAT_INVALID", FAIL, "error", reason, "router_number"
+            )
+
+    if area_kind == "landline":
+        area_code = area_info["area_code"]
+        area_name = area_info["area_name"]
+        area_district = area_info["district"]
+        area_province = area_info["province"]
+        checks["router_number_format"].update({
+            "normalized_number": area_info["normalized_number"],
+            "area_code": area_code,
+            "area_name": area_name,
+        })
+
+        address = str(values.get("address", "") or "").strip()
+        address_codes = _area_codes_mentioned(address)
+        reported_district = _normalise_district(values.get("reported_district", ""))
+        reported_province = _normalise_province(values.get("reported_province", ""))
+        callback_outcome: bool | None = None
+        if phone_area_check is not None and c_state == "valid" and c_lat is not None and c_lon is not None:
+            callback_outcome = phone_area_check(area_info["normalized_number"], c_lat, c_lon)
+
+        contradictory_evidence: list[str] = []
+        matching_evidence: list[str] = []
+        if address_codes:
+            if area_code in address_codes:
+                matching_evidence.append(f"address text mentions {area_name}")
+            else:
+                mentioned_areas = sorted({SL_LANDLINE_AREAS[code][0] for code in address_codes})
+                contradictory_evidence.append(
+                    f"address text mentions {', '.join(mentioned_areas)}, not {area_name}"
+                )
+        if reported_district:
+            if reported_district == area_district:
+                matching_evidence.append(f"reported district matches {area_district}")
+            else:
+                contradictory_evidence.append(
+                    f"reported district is {reported_district}, while {area_name} belongs to {area_district} district"
+                )
+        if reported_province:
+            if reported_province == area_province:
+                matching_evidence.append(f"reported province matches {area_province}")
+            else:
+                contradictory_evidence.append(
+                    f"reported province is {reported_province}, while {area_name} is in {area_province} province"
+                )
+        if callback_outcome is False:
+            contradictory_evidence.append("configured coordinate-to-phone-area reference reports a mismatch")
+        elif callback_outcome is True:
+            matching_evidence.append("configured coordinate-to-phone-area reference matches")
+
+        if contradictory_evidence:
+            message = (
+                f"Area code {area_code} indicates the {area_name} numbering area, but "
+                + "; ".join(contradictory_evidence)
+                + ". Review the source record. Area codes do not identify exact coordinates."
+            )
+            checks["phone_area"] = _check(FAIL, message=message)
+            checks["phone_area"].update({
+                "area_code": area_code, "area_name": area_name,
+                "normalized_number": area_info["normalized_number"],
+            })
+            add("PHONE_AREA_MISMATCH", FAIL, "warning", message, "router_number")
+        elif matching_evidence and (
+            any(evidence.startswith("address text") for evidence in matching_evidence)
+            or any(evidence.startswith("reported district") for evidence in matching_evidence)
+            or callback_outcome is True
+        ):
+            message = (
+                f"Area code {area_code} indicates the {area_name} numbering area and is consistent "
+                f"with the available location evidence ({'; '.join(matching_evidence)}). "
+                "This is a plausibility check, not proof of the subscriber's exact address."
+            )
+            checks["phone_area"] = _check(PASS, message=message)
+            checks["phone_area"].update({
+                "area_code": area_code, "area_name": area_name,
+                "normalized_number": area_info["normalized_number"],
+            })
+        else:
+            message = (
+                f"Area code {area_code} indicates the {area_name} numbering area, but the provided "
+                "address/coordinates do not contain enough independent area evidence to verify it."
+            )
+            checks["phone_area"] = _check(UNVERIFIED, message=message)
+            checks["phone_area"].update({
+                "area_code": area_code, "area_name": area_name,
+                "normalized_number": area_info["normalized_number"],
+            })
+            add(
+                "PHONE_AREA_UNVERIFIED", UNVERIFIED, "info",
+                "Landline area was inferred from the telephone prefix, but its consistency with the customer location could not be verified.",
+                "router_number",
+            )
+    elif area_kind == "unknown_area":
+        checks["phone_area"] = _check(
+            UNVERIFIED,
+            message="A 10-digit number was found, but its numbering area is not in the configured Sri Lankan geographic landline list.",
+        )
+        checks["phone_area"].update({
+            "area_code": area_info.get("area_code"),
+            "normalized_number": area_info["normalized_number"],
+        })
+    else:
+        checks["phone_area"] = _check(
+            NOT_APPLICABLE if area_kind in {"mobile", "invalid", "missing"} else UNVERIFIED,
+            message="No recognised Sri Lankan fixed-line area can be inferred from this number.",
+        )
 
     direct_distance: float | None = None
     if c_state == "valid" and d_state == "valid":
