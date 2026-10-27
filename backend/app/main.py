@@ -4,6 +4,7 @@ from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pymongo.errors import PyMongoError
 
+from .api.validation_runs import router as validation_runs_router
 from .config import settings
 from .database import client, ensure_indexes, ping_database
 
@@ -35,8 +36,10 @@ app.add_middleware(
     allow_origins=settings.cors_origins,
     allow_credentials=False,
     allow_methods=["GET", "POST", "PUT", "DELETE"],
-    allow_headers=["Content-Type", "Authorization"],
+    allow_headers=["Content-Type", "Authorization", "X-API-Key"],
 )
+
+app.include_router(validation_runs_router)
 
 
 @app.get("/api/health")

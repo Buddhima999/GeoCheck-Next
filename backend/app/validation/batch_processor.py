@@ -1,8 +1,7 @@
 """Streaming, bounded-batch CSV validation and MongoDB persistence.
 
-This is the processing service used by a future upload/worker API. It deliberately
-does not load the entire customer file into memory. It stores row-level findings
-in customer_records and per-DP rollups in dp_records.
+The worker preflights CSV syntax before this processor writes any customer rows.
+This function still streams the processing pass and never loads the whole file.
 """
 from __future__ import annotations
 
@@ -210,6 +209,7 @@ def process_csv_file(
     customer_records: Collection,
     dp_records: Collection,
     batch_size: int = 1000,
+    max_rows: int | None = None,
     settings: ValidationSettings = ValidationSettings(),
     country_check: Callable[[float, float], bool | None] | None = None,
     phone_area_check: Callable[[str, float, float], bool | None] | None = None,
@@ -218,12 +218,14 @@ def process_csv_file(
 ) -> dict[str, Any]:
     """Validate and persist a CSV in bounded batches.
 
-    The caller must create the validation_runs document first. This service updates
-    progress/status, but it does not implement queueing, upload storage, or restart
-    recovery yet. The small in-memory dataset helper is not used here.
+    The caller must create the validation_runs document first. A worker should
+    preflight the entire CSV before calling this service. Queueing and restart
+    recovery are handled separately; partial writes are not safe to auto-resume.
     """
     if batch_size < 1:
         raise ValueError("batch_size must be at least 1")
+    if max_rows is not None and max_rows < 1:
+        raise ValueError("max_rows must be at least 1 when configured")
 
     start_time = utc_now()
     validation_runs.update_one(
@@ -231,6 +233,7 @@ def process_csv_file(
         {
             "$set": {
                 "status": "PROCESSING",
+                "stage": "VALIDATING",
                 "processing_started_at": start_time,
                 "last_error": None,
             }
@@ -245,7 +248,12 @@ def process_csv_file(
 
     try:
         with Path(csv_path).open("r", newline="", encoding="utf-8-sig") as stream:
-            mapped_rows = iter_mapped_rows(stream, mapping, include_blank_rows=True)
+            mapped_rows = iter_mapped_rows(
+                stream,
+                mapping,
+                include_blank_rows=True,
+                max_rows=max_rows,
+            )
             for batch in _chunks(mapped_rows, batch_size):
                 source_rows_seen += len(batch)
                 blank_rows_skipped += sum(bool(row.get("is_blank")) for row in batch)
@@ -353,6 +361,7 @@ def process_csv_file(
             {
                 "$set": {
                     "status": "COMPLETED",
+                    "stage": "COMPLETED",
                     "completed_at": completed,
                     "summary": summary,
                 }
@@ -365,6 +374,7 @@ def process_csv_file(
             {
                 "$set": {
                     "status": "FAILED",
+                    "stage": "FAILED",
                     "failed_at": utc_now(),
                     "last_error": f"{type(exc).__name__}: {str(exc)[:500]}",
                     "partial_rows_processed": rows_processed,
