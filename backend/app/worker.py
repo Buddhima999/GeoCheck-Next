@@ -25,6 +25,8 @@ from .upload_storage import remove_upload, resolve_upload_path
 from .reference_data import ReferenceData, load_reference_data
 from .validation.batch_processor import process_csv_file
 from .validation.csv_import import iter_mapped_rows
+from .validation.google_maps import GoogleMapsClient
+from .validation.rules import ValidationSettings
 
 logger = logging.getLogger("geocheck.worker")
 
@@ -187,6 +189,7 @@ def process_next_queued_run(
     run_id = str(run.get("run_id", ""))
     file_key = run.get("input_file_key")
     terminal_status = "FAILED"
+    google_maps_client: GoogleMapsClient | None = None
     try:
         mapping = run.get("column_mapping")
         if not isinstance(mapping, dict) or not mapping:
@@ -254,6 +257,26 @@ def process_next_queued_run(
             {"$set": restart_fields, "$unset": unset_fields},
         )
         callbacks = reference_data.callbacks() if reference_data is not None else {}
+        distance_method = str(settings.distance_method).strip().casefold()
+        if distance_method not in {"straight_line", "google_routes"}:
+            raise ValueError("DISTANCE_METHOD must be straight_line or google_routes.")
+        if settings.google_maps_server_key and (distance_method == "google_routes" or settings.google_geocoding_enabled):
+            google_maps_client = GoogleMapsClient(
+                settings.google_maps_server_key,
+                max_requests=settings.google_maps_max_requests_per_run,
+                timeout_seconds=settings.google_maps_timeout_seconds,
+            )
+        if distance_method == "google_routes" and google_maps_client is not None:
+            callbacks["route_distance_check"] = google_maps_client.route_distance_m
+        if settings.google_geocoding_enabled and google_maps_client is not None:
+            callbacks["geocode_address_check"] = google_maps_client.address_distance_m
+
+        validation_settings = ValidationSettings(
+            customer_dp_limit_m=settings.customer_dp_limit_m,
+            max_line_distance_m=settings.max_line_distance_m,
+            distance_method=distance_method,
+            address_match_tolerance_m=settings.google_address_match_tolerance_m,
+        )
         summary = process_csv_file(
             csv_path,
             run_id=run_id,
@@ -263,6 +286,7 @@ def process_next_queued_run(
             dp_records=dp_collection,
             batch_size=configured_batch_size,
             max_rows=configured_max_rows,
+            settings=validation_settings,
             **callbacks,
         )
         terminal_status = str(summary.get("status", "FAILED"))
@@ -291,6 +315,11 @@ def process_next_queued_run(
             # The next worker loop or stale-run check will surface the interrupted job.
             logger.error("Could not persist failure state for run %s", run_id or "unknown")
     finally:
+        if google_maps_client is not None:
+            try:
+                google_maps_client.close()
+            except Exception:
+                logger.warning("Could not close Google Maps client for run %s", run_id or "unknown")
         try:
             current = run_collection.find_one({"run_id": run_id}, {"status": 1})
             if current and current.get("status") in {"COMPLETED", "FAILED"}:
