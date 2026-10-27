@@ -9,6 +9,12 @@
 
 Missing results must never default to PASS.
 
+## Required customer audit CSV
+
+The upload profile requires these mapped fields: `customer_id`, `router_number`, `customer_latitude`, `customer_longitude`, `cust_address` (mapped to logical `address`), `dp_id`, `dp_latitude`, `dp_longitude`, and `line_distance_m`. Header matching ignores punctuation/case and accepts common aliases. The legacy `phone_number` field can substitute for `router_number` when present. Missing required columns are rejected during upload; invalid row values become findings in the report.
+
+`router_number` is treated as an opaque service/router identifier. The application does not assume it is a geographic telephone number or invent a format/area-code rule. Missing values are faults. Telephone-area validation only runs when a distinct `phone_number` is mapped and an approved LEA reference dataset is configured.
+
 ## Proposed rule catalogue
 
 | Code | Entity | Rule | Notes |
@@ -18,7 +24,7 @@ Missing results must never default to PASS.
 | `COORD_OUT_OF_RANGE` | Customer / DP observation | Latitude outside [-90, 90] or longitude outside [-180, 180] | Fail |
 | `COORD_ZERO_PLACEHOLDER` | Customer / DP observation | Both coordinates zero | Flag placeholder |
 | `COORD_POSSIBLE_SWAP` | Customer / DP observation | Swapped values make geographic sense while originals do not | Warning; never auto-correct |
-| `COUNTRY_BOUNDARY` | Customer / DP | Outside approved accepted geography | Approved 150 m coastal tolerance, metre-based geometry |
+| `COUNTRY_BOUNDARY` | Customer | Customer point outside the configured Sri Lanka polygon | Boundary data is a starting asset from the legacy repository; verify source/accuracy before operational use |
 | `PHONE_AREA_MISMATCH` | Customer | Geographic phone area conflicts with location-derived area | Apply approved LEA table; normally a review finding |
 | `ADDRESS_ZONE_MISMATCH` | Customer | Coordinates outside reliably resolved locality zone | Unverified if locality ambiguous or zone unavailable |
 | `CUSTOMER_DP_DISTANCE` | Customer-DP relationship | Straight-line distance exceeds threshold | Association anomaly; use only eligible customer evidence for DP scoring |
@@ -29,15 +35,21 @@ Missing results must never default to PASS.
 
 ## Distance semantics
 
-Haversine estimates straight-line separation in metres; it does not calculate actual cable routing.
+Two distance measurements are kept separate:
 
-- Customer-to-DP distance: initial proposal is 500 m; confirm with the provider.
-- Reported overhead distance: the provider confirmed it is straight-line customer-to-DP distance. Compare it to the Haversine-derived distance using `overhead_distance_tolerance_m` (currently a provisional 25 m tolerance that still needs operational approval).
-- `line_distance_m` is confirmed to use metres. Validate that values are finite and non-negative; no maximum threshold is applied until the provider approves one. Do not require cable length to equal straight-line distance.
+- `DISTANCE_METHOD=straight_line` (default) calculates the direct customer-to-DP separation with Haversine. It is local, needs no Google API key and is the default 500 m check.
+- `DISTANCE_METHOD=google_routes` calls the Google Maps Routes API in `DRIVE` mode and compares its road-route distance with `CUSTOMER_DP_LIMIT_M` (default 500 m). Google requires a response field mask; the implementation requests only `routes.distanceMeters`. The route value is not the overhead cable length. Without a key, with an unavailable route, or after the per-run API request cap, the route check remains `UNVERIFIED` and never falls back silently to Haversine. See the [Routes API](https://developers.google.com/maps/documentation/routes/compute_route_directions) documentation.
+- The report keeps the Haversine direct distance separate from any Google road-route distance. It does not claim that either one is actual cable length.
+- `line_distance_m` is checked for presence, finiteness and non-negative numeric value. No maximum is assumed by default because actual cable length can differ from direct or road distance. A provider-approved maximum can be configured with `MAX_LINE_DISTANCE_M`.
+- `overhead_distance_m`, if separately supplied, is optional and is checked against coordinate-derived distance only when the provider confirms the field has that exact meaning. Its tolerance defaults to 25 m and should be approved before production use.
 
-## Geographic tolerance
+### Google address validation
 
-The proposed 150 m coastal tolerance must be applied using geometry in a suitable metre-based coordinate system, not by adding 150 to latitude/longitude. Country boundary, inland water and locality-zone tests are separate rules.
+When `GOOGLE_GEOCODING_ENABLED=true` and a backend-only `GOOGLE_MAPS_SERVER_KEY` is configured, each distinct address is geocoded with a per-run request cap and cache. The result is compared to customer coordinates using `GOOGLE_ADDRESS_MATCH_TOLERANCE_M` (default 500 m). If geocoding fails, the system reports `UNVERIFIED`; it does not assert that the customer address is wrong. When Google geocoding is off, approved locality polygons may provide an area-level check; absent reference data leaves it unverified. Google Maps API access requires the appropriate APIs and billing configuration; restrict the key to the required APIs and backend usage.
+
+## Geographic boundary
+
+The bundled boundary is copied from the legacy project and is not independently certified. The point-in-polygon check determines whether a coordinate falls inside that configured polygon; it does not independently prove an address, active service, or cadastral land status. Boundary precision, island coverage and inland-water handling must be reviewed with the provider before operational decisions.
 
 ## Aggregation
 
