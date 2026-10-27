@@ -36,7 +36,7 @@ pip install -r requirements.txt
 uvicorn app.main:app --reload --host 127.0.0.1 --port 8000
 ~~~
 
-The API uses MongoDB and creates its indexes during startup. /api/health checks database connectivity. CSV upload and run-status endpoints fail closed with HTTP 503 until GEOCHECK_API_KEY is configured.
+The API uses MongoDB and creates its indexes during startup. /api/health checks database connectivity. CSV upload, run-status, results, and reference-inventory endpoints fail closed until GEOCHECK_API_KEY is configured.
 
 ### Background worker
 
@@ -46,7 +46,7 @@ Open a second terminal and run this from the backend directory, using the same .
 python -m app.worker
 ~~~
 
-The worker claims queued runs atomically from MongoDB, checks the full CSV before writing validation records, then processes rows in bounded batches. Run only one worker process for this MVP. The API and worker must share the same persistent UPLOAD_DIR; in containers, mount the same persistent volume at that location in both services.
+The worker claims queued runs atomically from MongoDB, preflights the complete CSV, loads the configured reference files, and processes rows in bounded batches. It records reference file hashes with each run. Run only one worker process for this MVP. The API and worker must share the same persistent UPLOAD_DIR; in containers, mount the same persistent volume at that location in both services.
 
 ### Upload and check a run
 
@@ -88,7 +88,7 @@ The same test command runs automatically in GitHub Actions for pushes to main an
 
 ## Queue and failure behavior
 
-The queue is persisted in validation_runs, so queued work survives API and worker process restarts as long as MongoDB and the shared upload volume persist. The worker preflights CSV syntax and row/field limits before processing. A run that stops reporting progress for WORKER_STALE_AFTER_SECONDS (default 900 seconds) is marked failed, partial records are left attached to that failed run, and the stored upload is removed. Automatic resume is not implemented because replaying partially written batches is not yet idempotent; upload the source CSV again as a new run. Do not manually change a failed run back to queued.
+The queue is persisted in validation_runs, so queued work survives API and worker process restarts as long as MongoDB and the shared upload volume persist. The worker preflights CSV syntax and row/field limits before processing. A run that stops reporting progress for WORKER_STALE_AFTER_SECONDS (default 900 seconds) is requeued for one clean replay when attempts remain: the worker re-runs preflight, deletes that run's partial customer/DP outputs, resets counters, and starts again from the source file. After WORKER_MAX_ATTEMPTS is reached, the run is marked failed, partial records remain attached to the failed run for diagnosis, and the stored upload is removed. This restart behavior assumes one worker process for the MVP; multi-worker leases and production-grade coordination are not implemented.
 
 ## Generate synthetic test data
 
@@ -114,4 +114,4 @@ Generated files are written to test-data/generated/ and ignored by Git because s
 - Approved tolerance for overhead_distance_m comparison (its meaning is confirmed as straight-line customer-to-DP distance; the current 25 m tolerance is provisional).
 - Agreed DP association thresholds and duplicate-ID policy.
 
-See docs/PHASE_0_DATA_CONTRACT.md, docs/VALIDATION_RULES.md, docs/BATCH_PROCESSING_DESIGN.md and docs/UPLOAD_AND_WORKER.md.
+See docs/PHASE_0_DATA_CONTRACT.md, docs/VALIDATION_RULES.md, docs/BATCH_PROCESSING_DESIGN.md, docs/UPLOAD_AND_WORKER.md and docs/REFERENCE_DATA.md. The map explorer uses the VITE_MAP_TILE_URL variable; the default OpenStreetMap tiles should be used with synthetic data unless external tile access is approved.
