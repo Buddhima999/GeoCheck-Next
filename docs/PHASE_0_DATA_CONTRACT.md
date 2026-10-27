@@ -7,7 +7,7 @@ The current upload profile is the nine-field provider CSV contract below. The ac
 | Source header / logical field | Required | Validation purpose |
 |---|---:|---|
 | `customer_id` | Yes | Preserve source value; detect conflicting records for the same normalized ID |
-| `router_number` | Yes | Preserve and check presence of the router/service identifier; treated as opaque unless the provider specifies its meaning |
+| `router_number` | Yes | Customer fixed-line telephone number; validate Sri Lankan 10-digit format and infer a numbering area from its area code. This does not identify exact coordinates or subscriber ownership |
 | `customer_latitude` / `customer_longitude` | Yes | Validate numeric geographic coordinates, placeholders, possible swaps and country-boundary membership |
 | `cust_address` (logical `address`) | Yes | Compare the geocoded/reference location with the uploaded customer coordinate where a trusted lookup is available |
 | `dp_id` | Yes | Preserve original value and normalize only for grouping |
