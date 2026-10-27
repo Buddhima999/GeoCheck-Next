@@ -17,12 +17,21 @@ class Settings(BaseSettings):
     worker_poll_seconds: float = 2.0
     worker_stale_after_seconds: int = 900
     worker_batch_size: int = 1000
+    worker_max_attempts: int = 2
+    reference_data_dir: Path = Path(__file__).resolve().parents[1] / "reference-data"
 
     model_config = SettingsConfigDict(
         env_file=".env",
         env_file_encoding="utf-8",
         extra="ignore",
     )
+
+    @property
+    def resolved_reference_data_dir(self) -> Path:
+        path = self.reference_data_dir
+        if path.is_absolute():
+            return path.resolve()
+        return (Path(__file__).resolve().parents[1] / path).resolve()
 
     @property
     def cors_origins(self) -> list[str]:
