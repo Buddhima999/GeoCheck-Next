@@ -660,7 +660,7 @@ def validate_dataset_small(
             source = results[index]["source_values"]
             assert isinstance(source, Mapping)
             address = re.sub(r"\s+", " ", str(source.get("address", "") or "")).strip().casefold()
-            phone = re.sub(r"\D", "", str(source.get("phone_number", "") or ""))
+            phone = re.sub(r"\D", "", str(source.get("router_number") or source.get("phone_number") or ""))
             signatures.add((
                 None if location is None else round(float(location["lat"]), 5),
                 None if location is None else round(float(location["lon"]), 5),
