@@ -278,13 +278,15 @@ def list_dp_results(
     for document in cursor:
         item = dict(document)
         eligible_rows = int(item.get("eligible_customer_row_count", 0) or 0)
+        assessed_rows = int(item.get("eligible_distance_assessed_row_count", 0) or 0)
         failed_rows = int(item.get("eligible_distance_fail_row_count", 0) or 0)
-        passed_rows = max(eligible_rows - failed_rows, 0)
+        passed_rows = int(item.get("eligible_distance_pass_row_count", 0) or 0)
+        item["eligible_distance_assessed_row_count"] = assessed_rows
         item["eligible_distance_pass_row_count"] = passed_rows
         item["eligible_distance_fail_percentage"] = (
-            round(failed_rows * 100.0 / eligible_rows, 2) if eligible_rows else None
+            round(failed_rows * 100.0 / assessed_rows, 2) if assessed_rows else None
         )
-        if eligible_rows == 0:
+        if assessed_rows == 0:
             item["association_evidence"] = "INSUFFICIENT_ELIGIBLE_ROWS"
         elif failed_rows > 0:
             item["association_evidence"] = "DISTANCE_FAILURES_OBSERVED"
@@ -497,13 +499,14 @@ def export_dp_results(run_id: str, consistency: str | None = Query(default=None,
 
     def dp_export_rows() -> Iterator[dict[str, Any]]:
         for document in cursor:
-            eligible_rows = int(document.get("eligible_customer_row_count", 0) or 0)
+            assessed_rows = int(document.get("eligible_distance_assessed_row_count", 0) or 0)
             failed_rows = int(document.get("eligible_distance_fail_row_count", 0) or 0)
             item = dict(document)
-            item["eligible_distance_pass_row_count"] = max(eligible_rows - failed_rows, 0)
-            item["eligible_distance_fail_percentage"] = round(failed_rows * 100.0 / eligible_rows, 2) if eligible_rows else None
+            item["eligible_distance_assessed_row_count"] = assessed_rows
+            item["eligible_distance_pass_row_count"] = int(document.get("eligible_distance_pass_row_count", 0) or 0)
+            item["eligible_distance_fail_percentage"] = round(failed_rows * 100.0 / assessed_rows, 2) if assessed_rows else None
             item["association_evidence"] = (
-                "INSUFFICIENT_ELIGIBLE_ROWS" if eligible_rows == 0
+                "INSUFFICIENT_ELIGIBLE_ROWS" if assessed_rows == 0
                 else "DISTANCE_FAILURES_OBSERVED" if failed_rows > 0
                 else "NO_DISTANCE_FAILURES_OBSERVED"
             )
