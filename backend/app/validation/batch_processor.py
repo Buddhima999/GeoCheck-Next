@@ -218,6 +218,8 @@ def _group_dp_observations(results: list[dict[str, Any]]) -> dict[str, dict[str,
                 "row_count": 0,
                 "valid_locations": [],
                 "eligible_customer_rows": 0,
+                "eligible_distance_assessed_rows": 0,
+                "eligible_distance_pass_rows": 0,
                 "eligible_distance_fail_rows": 0,
             },
         )
@@ -230,8 +232,14 @@ def _group_dp_observations(results: list[dict[str, Any]]) -> dict[str, dict[str,
         if eligible_for_dp_assessment(result):
             group["eligible_customer_rows"] += 1
             distance_check = checks.get("customer_dp_distance", {})
-            if isinstance(distance_check, Mapping) and distance_check.get("status") == FAIL:
-                group["eligible_distance_fail_rows"] += 1
+            if isinstance(distance_check, Mapping):
+                distance_status = distance_check.get("status")
+                if distance_status in {PASS, FAIL}:
+                    group["eligible_distance_assessed_rows"] += 1
+                    if distance_status == PASS:
+                        group["eligible_distance_pass_rows"] += 1
+                    else:
+                        group["eligible_distance_fail_rows"] += 1
     return groups
 
 
@@ -278,6 +286,8 @@ def _make_dp_updates(
             "valid_coordinate_observation_count": len(group["valid_locations"]),
             "coordinate_conflict_observation_count": outlier_count,
             "eligible_customer_row_count": group["eligible_customer_rows"],
+            "eligible_distance_assessed_row_count": group.get("eligible_distance_assessed_rows", 0),
+            "eligible_distance_pass_row_count": group.get("eligible_distance_pass_rows", 0),
             "eligible_distance_fail_row_count": group["eligible_distance_fail_rows"],
         }
 
@@ -295,6 +305,8 @@ def _make_dp_updates(
             "valid_coordinate_observation_count": len(group["valid_locations"]),
             "coordinate_conflict_observation_count": outlier_count,
             "eligible_customer_row_count": group["eligible_customer_rows"],
+            "eligible_distance_assessed_row_count": group.get("eligible_distance_assessed_rows", 0),
+            "eligible_distance_pass_row_count": group.get("eligible_distance_pass_rows", 0),
             "eligible_distance_fail_row_count": group["eligible_distance_fail_rows"],
         }
         update: dict[str, Any] = {
