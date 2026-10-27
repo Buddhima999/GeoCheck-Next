@@ -217,10 +217,17 @@ def validate_row(
         direct_distance = haversine_m(c_lat, c_lon, d_lat, d_lon)
         direct_okay = direct_distance <= settings.customer_dp_limit_m
         checks["customer_dp_direct_distance"] = _check(
+            PASS,
+            distance_m=direct_distance,
+            message="Direct geographic distance calculated from customer and DP coordinates; see overhead_distance_500m for the 500 m overhead-distance threshold.",
+        )
+        checks["overhead_distance_500m"] = _check(
             PASS if direct_okay else FAIL,
             distance_m=direct_distance,
-            message="Direct geographic distance calculated from customer and DP coordinates; not cable-route length.",
+            message=f"Calculated overhead distance compared with the {settings.customer_dp_limit_m:.1f} m limit; this is direct geographic distance, not a measured cable route.",
         )
+        if not direct_okay and settings.distance_method == "google_routes":
+            add("OVERHEAD_DISTANCE_LIMIT", FAIL, "warning", f"Calculated overhead distance is {direct_distance:.1f} m, above {settings.customer_dp_limit_m:.1f} m.", "overhead_distance_m")
         if settings.distance_method == "google_routes":
             route_distance = route_distance_check(c_lat, c_lon, d_lat, d_lon) if route_distance_check else None
             if route_distance is None:
@@ -260,6 +267,7 @@ def validate_row(
                 add("CUSTOMER_DP_DISTANCE", FAIL, "warning", f"Customer is {direct_distance:.1f} m from DP; configured limit is {settings.customer_dp_limit_m:.1f} m.")
     else:
         checks["customer_dp_direct_distance"] = _check(NOT_APPLICABLE, message="Customer or DP coordinates are unusable.")
+        checks["overhead_distance_500m"] = _check(NOT_APPLICABLE, message="Customer or DP coordinates are unusable.")
         checks["customer_dp_distance"] = _check(NOT_APPLICABLE, message="Customer or DP coordinates are unusable.")
         if settings.distance_method == "google_routes":
             checks["google_route_distance"] = _check(NOT_APPLICABLE, message="Coordinates are unusable.")
@@ -336,6 +344,7 @@ def validate_row(
         # The existing project data contract defines overhead_distance_m as the
         # direct customer-to-DP distance, not a road route or measured cable length.
         "overhead_distance_m": round(direct_distance, 1) if direct_distance is not None else None,
+        "overhead_distance_500m_status": checks.get("overhead_distance_500m", {}).get("status", NOT_APPLICABLE),
         "google_route_distance_m": checks.get("google_route_distance", {}).get("distance_m"),
         "distance_500m_m": checks.get("customer_dp_distance", {}).get("distance_m"),
         "distance_500m_status": checks.get("customer_dp_distance", {}).get("status", UNVERIFIED),
