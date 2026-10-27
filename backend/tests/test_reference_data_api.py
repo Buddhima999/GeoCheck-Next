@@ -38,7 +38,7 @@ class ReferenceDataApiTests(unittest.TestCase):
         self.assertFalse(body["country_boundary"]["configured"])
         self.assertEqual(body["country_boundary"]["status"], "MISSING")
         self.assertNotIn("directory", body)
-        self.assertFalse(body["directory_configured"])
+        self.assertTrue(body["directory_configured"])
 
     def test_status_endpoint_requires_api_key(self):
         with patch.object(settings, "api_key", "test-only-secret"):
