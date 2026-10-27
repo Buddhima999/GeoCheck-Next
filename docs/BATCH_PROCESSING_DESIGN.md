@@ -27,7 +27,7 @@ The current eligibility count is a count of source rows, not deduplicated custom
 
 When approved reference data is absent, reference-dependent checks remain `UNVERIFIED`. The service does not infer provider regions or telephone-area mappings.
 
-The confirmed `line_distance_m` unit is metres. It is checked for a finite, non-negative value; an upper limit is not applied until the provider approves one. `overhead_distance_m` is not compared to straight-line distance unless its meaning is confirmed by the provider.
+The confirmed `line_distance_m` unit is metres. It is checked for a finite, non-negative value; an upper limit is not applied until the provider approves one. The provider confirmed `overhead_distance_m` represents straight-line customer-to-DP distance, so the validator compares it with the Haversine-derived distance. The 25 m tolerance remains provisional pending operational approval.
 
 ## Current limitations
 
