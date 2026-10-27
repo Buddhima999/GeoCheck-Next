@@ -181,6 +181,13 @@ class ValidationUploadApiTests(unittest.TestCase):
         )
         self.assertEqual(response.status_code, 401)
 
+    def test_example_api_key_does_not_enable_upload_endpoints(self):
+        with patch.object(settings, "api_key", "replace-with-a-long-random-secret"):
+            response = self.upload()
+        self.assertEqual(response.status_code, 503)
+        self.assertEqual(len(self.runs.documents), 0)
+        self.assertEqual(list(self.upload_dir.iterdir()), [])
+
 
 if __name__ == "__main__":
     unittest.main()
