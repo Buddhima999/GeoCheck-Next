@@ -143,7 +143,7 @@ class ValidationResultsApiTests(unittest.TestCase):
                 "dp_location_observed": {"lat": 6.91, "lon": 79.81},
                 "coordinate_consistency": "CONFLICT", "observed_row_count": 2,
                 "valid_coordinate_observation_count": 2, "coordinate_conflict_observation_count": 1,
-                "eligible_customer_row_count": 1, "eligible_distance_fail_row_count": 1,
+                "eligible_customer_row_count": 1, "eligible_distance_assessed_row_count": 1, "eligible_distance_pass_row_count": 0, "eligible_distance_fail_row_count": 1,
                 "issue_codes": ["DP_COORD_CONFLICT"],
             }
         ])
