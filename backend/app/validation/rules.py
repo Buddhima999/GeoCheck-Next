@@ -230,9 +230,9 @@ def validate_row(
                 )
                 checks["customer_dp_distance"] = _check(
                     UNVERIFIED,
-                    distance_m=direct_distance,
                     message="Google Routes mode is enabled, but no route distance was returned. The direct distance is shown separately and is not substituted for the route result.",
                 )
+                checks["customer_dp_distance"]["method"] = "google_routes"
                 add("CUSTOMER_DP_ROUTE_UNVERIFIED", UNVERIFIED, "info", "The Google Maps route could not be verified; the 500 m route check was not passed or failed.")
             else:
                 route_okay = route_distance <= settings.customer_dp_limit_m
@@ -304,12 +304,18 @@ def validate_row(
     else:
         checks["overhead_distance"] = _check(UNVERIFIED, message="Cannot compare without valid coordinates.")
 
+    check_statuses = {
+        str(item.get("status"))
+        for item in checks.values()
+        if isinstance(item, Mapping)
+    }
+    finding_statuses = {
+        str(item.get("status"))
+        for item in findings
+    }
     overall_status = (
-        FAIL if any(item.get("status") == FAIL for item in findings)
-        else UNVERIFIED if any(
-            checks.get(name, {}).get("status") == UNVERIFIED
-            for name in ("country_boundary", "address_zone", "customer_dp_distance", "line_distance", "overhead_distance")
-        ) or any(item.get("status") == UNVERIFIED for item in findings)
+        FAIL if FAIL in check_statuses or FAIL in finding_statuses
+        else UNVERIFIED if UNVERIFIED in check_statuses or UNVERIFIED in finding_statuses
         else PASS
     )
     raw_values = row.get("raw")
