@@ -415,8 +415,15 @@ class ReferenceData:
             mappings: set[str] = set()
             for province_name in province_names:
                 for district_name in district_names:
-                    mappings.update(self.provider_regions.get((province_name, district_name), set()))
-            if not mappings:
+                    pair_regions = self.provider_regions.get((province_name, district_name))
+                    if pair_regions is None:
+                        continue
+                    # An official province/district pair mapped to more than one
+                    # provider region is ambiguous. Never select one arbitrarily.
+                    if len(pair_regions) != 1:
+                        return None
+                    mappings.update(pair_regions)
+            if len(mappings) != 1:
                 return None
             if _normalize_label(reported_region) not in mappings:
                 return False
