@@ -27,7 +27,7 @@ _REQUIRED_REGION_COLUMNS = {"province", "district", "region"}
 
 
 def _normalize_label(value: object) -> str:
-    return re.sub(r"[^a-z0-9]+", "", str(value or "").casefold())
+    return "".join(char for char in str(value or "").casefold() if char.isalnum())
 
 
 def _clean_phone(value: object) -> str:
@@ -286,7 +286,7 @@ class ReferenceData:
             }
 
         return {
-            "directory": str(self.root),
+            "directory_configured": self.root.is_dir(),
             "country_boundary": item("country_boundary.geojson", len(self.country_index.features)),
             "administrative_areas": item("admin_areas.geojson", len(self.admin_index.features)),
             "lea_areas": item("lea_areas.geojson", len(self.lea_index.features)),
