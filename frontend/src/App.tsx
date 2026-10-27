@@ -39,6 +39,9 @@ type RunSummary = {
   customer_rows_stored: number;
   rows_with_findings: number;
   rows_with_hard_errors: number;
+  faulty_customers: number;
+  unverified_customers: number;
+  passed_customers: number;
   eligible_for_dp_assessment: number;
   dp_count: number;
   dp_coordinate_consistent: number;
@@ -54,9 +57,21 @@ type CustomerResult = {
   customer_id?: string | null;
   dp_id?: string | null;
   source_values?: Record<string, string>;
+  source_row_values?: Record<string, string>;
+  router_number?: string | null;
+  calculated_customer_dp_distance_m?: number | null;
+  overhead_distance_m?: number | null;
+  overhead_distance_500m_status?: string;
+  google_route_distance_m?: number | null;
+  distance_500m_m?: number | null;
+  distance_500m_status?: string;
+  distance_method?: string;
+  customer_inside_sri_lanka?: string;
+  overall_status?: string;
+  has_fault?: boolean;
   customer_location?: { lat: number; lon: number } | null;
   dp_location_observed?: { lat: number; lon: number } | null;
-  checks?: Record<string, { status: string; distance_m?: number; message?: string }>;
+  checks?: Record<string, { status: string; distance_m?: number; message?: string; method?: string }>;
   issue_codes?: string[];
   findings?: Array<{ code: string; severity: string; message: string }>;
   has_hard_error?: boolean;
@@ -470,21 +485,30 @@ export default function App() {
       .finally(() => setLoadingResults(false));
   }
 
-  async function downloadExport(kind: "customers" | "dps") {
+  async function downloadExport(
+    kind: "customers" | "dps",
+    reportType: "all" | "faults" | "unverified" = "all",
+  ) {
     if (!selectedRunId || !apiKey.trim()) return;
     setError("");
     try {
-      const endpoint = kind === "customers" ? "customers/export.csv" : "dps/export.csv";
+      const endpoint = kind === "customers"
+        ? `customers/export.csv?report_type=${reportType}`
+        : "dps/export.csv";
       const response = await apiFetch(`/api/validation-runs/${encodeURIComponent(selectedRunId)}/${endpoint}`);
       if (!response.ok) throw new Error("Export failed. Check the API key and selected run.");
       const blob = await response.blob();
       const objectUrl = URL.createObjectURL(blob);
       const anchor = document.createElement("a");
       anchor.href = objectUrl;
-      anchor.download = `geocheck-${kind}-${selectedRunId}.csv`;
+      anchor.download = kind === "customers"
+        ? `geocheck-${reportType}-customers-${selectedRunId}.csv`
+        : `geocheck-dps-${selectedRunId}.csv`;
       anchor.click();
       URL.revokeObjectURL(objectUrl);
-      setNotice(`Started ${kind} CSV export.`);
+      setNotice(kind === "customers"
+        ? `Started ${reportType === "all" ? "full audit" : reportType} customer report export.`
+        : "Started DP CSV export.");
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : "Export failed.");
     }
@@ -532,8 +556,8 @@ export default function App() {
         <section className="metrics-grid">
           <MetricCard label="Customers processed" value={formatNumber(summary?.customer_rows_stored)} note="Selected run" icon={Users} />
           <MetricCard label="Distinct DPs observed" value={formatNumber(summary?.dp_count)} note="Selected run" icon={Network} />
-          <MetricCard label="Rows with findings" value={formatNumber(summary?.rows_with_findings)} note="Issue codes present" icon={AlertTriangle} />
-          <MetricCard label="Hard-error rows" value={formatNumber(summary?.rows_with_hard_errors)} note="Requires attention" icon={FileCheck2} />
+          <MetricCard label="Faulty customers" value={formatNumber(summary?.faulty_customers)} note="At least one confirmed fault" icon={AlertTriangle} />
+          <MetricCard label="Unverified customers" value={formatNumber(summary?.unverified_customers)} note="Needs more evidence" icon={CircleHelp} />
         </section>
         <section className="panel reference-panel"><div className="panel-heading"><div><h2>Trusted reference data</h2><p>Checks stay UNVERIFIED when approved boundary or mapping files are missing.</p></div><button className="secondary-button" onClick={() => void loadReferenceStatus()} disabled={!apiKey || loadingReferences}><RefreshCw size={14} className={loadingReferences ? "spinning" : ""} /> Refresh inventory</button></div>
           <div className="reference-grid">
@@ -565,12 +589,12 @@ export default function App() {
             <label className="file-drop"><input type="file" accept=".csv,text/csv" onChange={(event) => { setCsvPreview(null); setColumnMapping({}); setFile(event.target.files?.[0] || null); }} /><span className="file-drop-icon"><Upload size={23} /></span><strong>{file?.name || "Choose a CSV file"}</strong><small>{file ? `${(file.size / (1024 * 1024)).toFixed(2)} MiB selected` : "Click to browse. Max upload size: 512 MiB by default."}</small></label>
             {previewing && <div className="loading-state compact"><LoaderCircle size={16} className="spinning" /> Reading CSV column names…</div>}
             {file && csvPreview && <div className="mapping-editor">
-              <div className="mapping-heading"><div><strong>Confirm column mapping</strong><span>Detected matches are pre-selected. All four coordinate fields are required.</span></div><span className="status-badge completed"><CheckCircle2 size={12} /> Preview ready</span></div>
+              <div className="mapping-heading"><div><strong>Confirm column mapping</strong><span>Detected matches are pre-selected. Customer ID, router number, address, coordinates, DP ID and line distance are required.</span></div><span className="status-badge completed"><CheckCircle2 size={12} /> Preview ready</span></div>
               <div className="mapping-grid">
                 {csvPreview.supported_fields.map((field) => {
                   const required = csvPreview.required_fields.includes(field);
                   return <label key={field} className="field-label mapping-field">
-                    <span>{field.replaceAll("_", " ")}{required && <b className="required-label">Required</b>}</span>
+                    <span>{(field === "router_number" || field === "phone_number") ? "router number" : field.replaceAll("_", " ")}{required && <b className="required-label">Required</b>}</span>
                     <select value={columnMapping[field] || ""} required={required} onChange={(event) => {
                       const selected = event.target.value;
                       setColumnMapping((previous) => {
@@ -617,7 +641,7 @@ export default function App() {
       </section>}
 
       {tab === "results" && <section className="panel results-panel">
-        <div className="panel-heading"><div><h2>Inspect validation results</h2><p>Search by customer ID, DP ID, phone or address. Results are paginated.</p></div><div className="header-actions"><button className="secondary-button" onClick={() => void downloadExport(resultKind)} disabled={!canReadResults || !apiKey}><ArrowDownToLine size={15} /> Export CSV</button></div></div>
+        <div className="panel-heading"><div><h2>Inspect validation results</h2><p>Search by customer ID, router number, DP ID or address. Results are paginated.</p></div><div className="header-actions">{resultKind === "customers" ? <><button className="secondary-button" onClick={() => void downloadExport("customers", "all")} disabled={!canReadResults || !apiKey}><ArrowDownToLine size={15} /> Full report</button><button className="secondary-button" onClick={() => void downloadExport("customers", "faults")} disabled={!canReadResults || !apiKey}><AlertTriangle size={15} /> Faults only</button><button className="secondary-button" onClick={() => void downloadExport("customers", "unverified")} disabled={!canReadResults || !apiKey}><CircleHelp size={15} /> Unverified</button></> : <button className="secondary-button" onClick={() => void downloadExport("dps")} disabled={!canReadResults || !apiKey}><ArrowDownToLine size={15} /> Export DPs</button>}</div></div>
         <div className="toolbar">
           <label className="field-label">Validation run<select value={selectedRunId} onChange={(event) => { const selected = runs.find((item) => item.run_id === event.target.value); if (selected) selectRun(selected); }}><option value="">Choose a run</option>{runs.map((item) => <option key={item.run_id} value={item.run_id}>{item.original_filename || item.run_id} — {item.status}</option>)}</select></label>
           <div className="toggle-group"><button className={resultKind === "customers" ? "selected" : ""} onClick={() => { setIssueFilter(""); setSearchDraft(""); setSearchQuery(""); void loadResults("customers", 0); }}>Customers</button><button className={resultKind === "dps" ? "selected" : ""} onClick={() => { setIssueFilter(""); setSearchDraft(""); setSearchQuery(""); void loadResults("dps", 0); }}>DPs</button></div>
@@ -629,7 +653,7 @@ export default function App() {
           loadingResults ? <div className="loading-state"><LoaderCircle size={19} className="spinning" /> Loading records…</div> :
           resultKind === "customers" ? <>
             <div className="table-scroll"><table><thead><tr><th>Source row</th><th>Customer</th><th>DP</th><th>Reported area</th><th>Distance check</th><th>Findings</th><th>DP assessment</th></tr></thead><tbody>
-              {(customerPage?.items || []).map((item) => <tr key={item.row_number}><td>{item.row_number}</td><td><strong>{item.customer_id || "Missing ID"}</strong><small>{item.source_values?.phone_number || "No phone value"}</small></td><td>{item.dp_id || "—"}</td><td><strong>{item.source_values?.reported_district || item.source_values?.reported_province || "Unreported"}</strong><small>{[item.source_values?.reported_province, item.source_values?.reported_region].filter(Boolean).join(" · ")}</small></td><td><StatusBadge status={item.checks?.customer_dp_distance?.status || "UNVERIFIED"} />{typeof item.checks?.customer_dp_distance?.distance_m === "number" && <small>{item.checks.customer_dp_distance.distance_m.toFixed(1)} m</small>}</td><td><div className="issue-tags">{item.issue_codes?.length ? item.issue_codes.map((code) => <span key={code} className="issue-tag">{code}</span>) : <span className="muted">No row findings</span>}</div></td><td><StatusBadge status={item.eligible_for_dp_assessment ? "ELIGIBLE" : "UNVERIFIED"} /></td></tr>)}
+              {(customerPage?.items || []).map((item) => <tr key={item.row_number}><td>{item.row_number}</td><td><strong>{item.customer_id || "Missing ID"}</strong><small>{item.source_values?.router_number || item.source_values?.phone_number || "No router number"}</small></td><td>{item.dp_id || "—"}</td><td><strong>{item.source_values?.address || item.source_values?.reported_district || item.source_values?.reported_province || "Unreported"}</strong><small>{item.source_values?.customer_latitude && item.source_values?.customer_longitude ? `${item.source_values.customer_latitude}, ${item.source_values.customer_longitude}` : "No customer coordinates"}</small></td><td><StatusBadge status={item.checks?.customer_dp_distance?.status || "UNVERIFIED"} />{typeof item.checks?.customer_dp_distance?.distance_m === "number" && <small>{item.checks.customer_dp_distance.distance_m.toFixed(1)} m · {item.checks.customer_dp_distance.method === "google_routes" ? "Google route" : "Direct"}</small>}{typeof item.overhead_distance_m === "number" && <small>Overhead (direct): {item.overhead_distance_m.toFixed(1)} m · {item.checks?.overhead_distance_500m?.status || item.overhead_distance_500m_status || "UNVERIFIED"}</small>}{typeof item.google_route_distance_m === "number" && <small>Google route: {item.google_route_distance_m.toFixed(1)} m</small>}</td><td><div className="issue-tags">{item.issue_codes?.length ? item.issue_codes.map((code) => <span key={code} className="issue-tag">{code}</span>) : <span className="muted">No row findings</span>}</div></td><td><StatusBadge status={item.eligible_for_dp_assessment ? "ELIGIBLE" : "UNVERIFIED"} /></td></tr>)}
               {!customerPage?.items.length && <tr><td colSpan={7} className="empty-cell">No customer rows match these filters.</td></tr>}
             </tbody></table></div>
             <Pagination total={customerPage?.total || 0} skip={customerPage?.skip || 0} limit={customerPage?.limit || PAGE_SIZE} onChange={(skip) => void loadResults("customers", skip)} />

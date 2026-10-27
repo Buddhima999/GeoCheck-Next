@@ -14,7 +14,8 @@ from typing import TextIO
 FIELD_ALIASES: dict[str, tuple[str, ...]] = {
     "customer_id": ("customerid", "custid", "subscriberid", "accountno", "accountnumber", "customer_id"),
     "phone_number": ("phonenumber", "phone", "mobile", "contactnumber", "telephone", "phone_number"),
-    "address": ("address", "customeraddress", "installationaddress", "fulladdress", "siteaddress"),
+    "router_number": ("routernumber", "router_number", "routerno", "service_number", "servicenumber", "subscriber_number"),
+    "address": ("address", "customeraddress", "installationaddress", "fulladdress", "siteaddress", "custaddress", "cust_address"),
     "customer_latitude": ("customerlatitude", "customerlat", "custlat", "latitude", "lat", "customer_latitude"),
     "customer_longitude": ("customerlongitude", "customerlon", "customerlong", "custlon", "longitude", "lon", "lng", "customer_longitude"),
     "dp_id": ("dpid", "fdpid", "distributionpointid", "fdp", "dp", "dp_id"),
@@ -29,6 +30,13 @@ FIELD_ALIASES: dict[str, tuple[str, ...]] = {
 
 REQUIRED_COORDINATE_FIELDS = (
     "customer_latitude", "customer_longitude", "dp_latitude", "dp_longitude"
+)
+
+# Required for the customer/DP fault-audit upload profile. phone_number remains
+# accepted as a legacy alternative to router_number.
+REQUIRED_AUDIT_FIELDS = (
+    "customer_id", "router_number", "customer_latitude", "customer_longitude",
+    "address", "dp_id", "dp_latitude", "dp_longitude", "line_distance_m",
 )
 
 
@@ -57,13 +65,18 @@ def detect_mapping(headers: list[str]) -> dict[str, str]:
     return result
 
 
-def validate_mapping(headers: list[str], mapping: Mapping[str, str]) -> None:
+def validate_mapping(
+    headers: list[str],
+    mapping: Mapping[str, str],
+    *,
+    required_fields: tuple[str, ...] = REQUIRED_COORDINATE_FIELDS,
+) -> None:
     """Raise ValueError when the mapping points to missing/ambiguous columns."""
     if not headers:
         raise ValueError("CSV has no header row")
     if len({normalize_header(h) for h in headers}) != len(headers):
         raise ValueError("CSV contains duplicate column headers after normalization")
-    for field in REQUIRED_COORDINATE_FIELDS:
+    for field in required_fields:
         header = mapping.get(field)
         if not header:
             raise ValueError(f"Required mapping is missing: {field}")
@@ -72,6 +85,23 @@ def validate_mapping(headers: list[str], mapping: Mapping[str, str]) -> None:
     used = [mapping[k] for k in mapping if mapping[k] in headers]
     if len(used) != len(set(used)):
         raise ValueError("One source column cannot map to multiple logical fields")
+
+
+def validate_audit_mapping(headers: list[str], mapping: Mapping[str, str]) -> None:
+    """Validate the nine-column customer/DP audit schema while accepting legacy phone_number."""
+    validate_mapping(headers, mapping)
+    missing = [
+        field for field in REQUIRED_AUDIT_FIELDS
+        if not mapping.get(field) and not (field == "router_number" and mapping.get("phone_number"))
+    ]
+    if missing:
+        raise ValueError(f"Required audit mapping is missing: {', '.join(missing)}")
+    for field in REQUIRED_AUDIT_FIELDS:
+        selected = mapping.get(field)
+        if field == "router_number" and not selected:
+            selected = mapping.get("phone_number")
+        if selected and selected not in headers:
+            raise ValueError(f"Mapped source column does not exist: {selected}")
 
 
 def iter_mapped_rows(

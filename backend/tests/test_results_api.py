@@ -127,14 +127,18 @@ class ValidationResultsApiTests(unittest.TestCase):
                 "customer_location": {"lat": 6.9, "lon": 79.8},
                 "dp_location_observed": {"lat": 6.91, "lon": 79.81},
                 "issue_codes": ["CUSTOMER_DP_DISTANCE"], "findings": [],
-                "has_hard_error": False, "eligible_for_dp_assessment": True,
+                "has_hard_error": False, "has_fault": True, "overall_status": "FAIL",
+                "router_number": "ROUTER-1", "calculated_customer_dp_distance_m": 700.0,
+                "overhead_distance_m": 700.0, "overhead_distance_500m_status": "FAIL",
+                "eligible_for_dp_assessment": True,
             },
             {
                 "run_id": "run-1", "row_number": 3, "customer_id": "SYN-C-2",
                 "dp_id": "DP-1", "search_terms_normalized": ["sync2", "syn", "c", "2", "dp1", "dp", "other", "synthetic", "street", "othersyntheticstreet"], "source_values": {"address": "Other synthetic street"},
                 "customer_location": None, "dp_location_observed": {"lat": 6.91, "lon": 79.81},
                 "issue_codes": ["COORD_MISSING"], "findings": [],
-                "has_hard_error": True, "eligible_for_dp_assessment": False,
+                "has_hard_error": True, "has_fault": False, "overall_status": "UNVERIFIED",
+                "router_number": "ROUTER-2", "eligible_for_dp_assessment": False,
             },
         ])
         self.dps = FakeCollection([
@@ -203,6 +207,9 @@ class ValidationResultsApiTests(unittest.TestCase):
         self.assertEqual(body["customer_rows_stored"], 2)
         self.assertEqual(body["rows_with_findings"], 2)
         self.assertEqual(body["rows_with_hard_errors"], 1)
+        self.assertEqual(body["faulty_customers"], 1)
+        self.assertEqual(body["unverified_customers"], 1)
+        self.assertEqual(body["passed_customers"], 0)
         self.assertEqual(body["eligible_for_dp_assessment"], 1)
         self.assertEqual(body["dp_coordinate_conflict"], 1)
 
@@ -216,6 +223,32 @@ class ValidationResultsApiTests(unittest.TestCase):
         self.assertIn("text/csv", response.headers["content-type"])
         self.assertIn("'=HYPERLINK(1)", response.text)
         self.assertIn("SYN-C-2", response.text)
+
+    def test_fault_export_only_includes_confirmed_failures(self):
+        response = self.client.get(
+            "/api/validation-runs/run-1/customers/export.csv?report_type=faults",
+            headers=self.headers,
+        )
+        self.assertEqual(response.status_code, 200, response.text)
+        self.assertIn("SYN-C-1", response.text)
+        self.assertNotIn("SYN-C-2", response.text)
+        self.assertIn("overhead_distance_m", response.text)
+
+    def test_unverified_export_is_separate_from_confirmed_faults(self):
+        response = self.client.get(
+            "/api/validation-runs/run-1/customers/export.csv?report_type=unverified",
+            headers=self.headers,
+        )
+        self.assertEqual(response.status_code, 200, response.text)
+        self.assertIn("SYN-C-2", response.text)
+        self.assertNotIn("SYN-C-1", response.text)
+
+    def test_export_rejects_unknown_report_type(self):
+        response = self.client.get(
+            "/api/validation-runs/run-1/customers/export.csv?report_type=failed-ish",
+            headers=self.headers,
+        )
+        self.assertEqual(response.status_code, 422)
 
     def test_unknown_run_is_404(self):
         response = self.client.get("/api/validation-runs/missing/summary", headers=self.headers)

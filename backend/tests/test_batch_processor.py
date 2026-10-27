@@ -26,6 +26,11 @@ HEADERS = [
 ]
 
 
+class FakeCursor(list):
+    def batch_size(self, count):
+        return self
+
+
 class FakeCollection:
     def __init__(self, documents=None):
         self.documents = [dict(document) for document in (documents or [])]
@@ -36,6 +41,9 @@ class FakeCollection:
             actual = document.get(key)
             if isinstance(value, dict) and "$in" in value:
                 if actual not in value["$in"]:
+                    return False
+            elif isinstance(value, dict) and "$ne" in value:
+                if actual == value["$ne"] or (isinstance(actual, list) and value["$ne"] in actual):
                     return False
             elif actual != value:
                 return False
@@ -78,7 +86,18 @@ class FakeCollection:
                     current.append(item)
 
     def find(self, query, projection=None):
-        return [dict(document) for document in self.documents if self._matches(document, query)]
+        return FakeCursor([dict(document) for document in self.documents if self._matches(document, query)])
+
+    def count_documents(self, query):
+        return sum(self._matches(document, query) for document in self.documents)
+
+    def update_many(self, query, update):
+        matched = 0
+        for document in self.documents:
+            if self._matches(document, query):
+                self._apply_update(document, update, inserting=False)
+                matched += 1
+        return type("UpdateResult", (), {"modified_count": matched, "matched_count": matched})()
 
     def insert_many(self, documents, ordered=True):
         self.documents.extend(dict(document) for document in documents)
@@ -211,12 +230,15 @@ class BatchProcessorTests(unittest.TestCase):
             self.make_row("C-1", dp_lat="6.9", dp_lon="79.85"),
             self.make_row("C-2", dp_lat="7.0", dp_lon="79.85"),
         ]
-        result, _, _, dps = self.run_rows(rows, batch_size=1)
+        result, _, customers, dps = self.run_rows(rows, batch_size=1)
         self.assertEqual(result["rows_processed"], 2)
         self.assertEqual(len(dps.documents), 1)
         self.assertEqual(dps.documents[0]["coordinate_consistency"], "CONFLICT")
         self.assertIn("DP_COORD_CONFLICT", dps.documents[0]["issue_codes"])
         self.assertEqual(dps.documents[0]["observed_row_count"], 2)
+        self.assertTrue(all("DP_COORD_CONFLICT" in row["issue_codes"] for row in customers.documents))
+        self.assertTrue(all(row["overall_status"] == "FAIL" for row in customers.documents))
+        self.assertTrue(all(row["eligible_for_dp_assessment"] is False for row in customers.documents))
 
     def test_customer_with_invalid_location_is_not_eligible_for_dp_assessment(self):
         rows = [self.make_row("C-1", customer_lat="")]

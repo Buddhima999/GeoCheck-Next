@@ -20,6 +20,17 @@ class Settings(BaseSettings):
     worker_max_attempts: int = 2
     reference_data_dir: Path = Path(__file__).resolve().parents[1] / "reference-data"
 
+    # Customer/DP distance rules. Google Routes mode uses driving-road distance,
+    # which is not the same measurement as actual overhead cable length.
+    distance_method: str = "straight_line"
+    customer_dp_limit_m: float = 500.0
+    max_line_distance_m: float | None = None
+    google_maps_server_key: str | None = None
+    google_geocoding_enabled: bool = False
+    google_maps_max_requests_per_run: int = 1000
+    google_maps_timeout_seconds: float = 8.0
+    google_address_match_tolerance_m: float = 500.0
+
     model_config = SettingsConfigDict(
         env_file=".env",
         env_file_encoding="utf-8",

@@ -14,6 +14,7 @@ from app.validation.csv_import import (
     iter_mapped_rows,
     preview_csv,
     validate_mapping,
+    validate_audit_mapping,
 )
 
 
@@ -98,6 +99,23 @@ class CSVImportEdgeCaseTests(unittest.TestCase):
         self.assertEqual([row["row_number"] for row in rows], [2, 3, 4])
         self.assertTrue(rows[1]["is_blank"])
         self.assertFalse(rows[0]["is_blank"])
+
+    def test_detects_all_requested_audit_headers_with_spacing(self):
+        headers = [
+            "customer_id", "router_number", "customer_latitude", "customer_longitude",
+            "cust_address", "dp_id", " dp_latitude ", " dp_longitude  ", "line_distance_m",
+        ]
+        detected = detect_mapping(headers)
+        self.assertEqual(detected["router_number"], "router_number")
+        self.assertEqual(detected["address"], "cust_address")
+        self.assertEqual(detected["dp_latitude"], " dp_latitude ")
+        self.assertEqual(detected["dp_longitude"], " dp_longitude  ")
+        validate_audit_mapping(headers, detected)
+
+    def test_audit_mapping_rejects_a_missing_required_business_field(self):
+        headers = ["customer_id", "router_number", "customer_latitude", "customer_longitude", "dp_id", "dp_latitude", "dp_longitude", "line_distance_m"]
+        with self.assertRaisesRegex(ValueError, "address"):
+            validate_audit_mapping(headers, detect_mapping(headers))
 
     def test_rejects_missing_header(self):
         with self.assertRaisesRegex(ValueError, "no header row"):

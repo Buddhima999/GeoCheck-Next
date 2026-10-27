@@ -30,8 +30,11 @@ CUSTOMER_LOCATION_ERROR_CODES = frozenset(
         "COORD_POSSIBLE_SWAP",
         "COUNTRY_BOUNDARY",
         "ADDRESS_ZONE_MISMATCH",
+        "ADDRESS_LOCATION_MISMATCH",
+        "ADDRESS_MISSING",
         "REPORTED_GEOGRAPHY_MISMATCH",
         "PHONE_AREA_MISMATCH",
+        "DP_COORD_CONFLICT",
     }
 )
 
@@ -47,7 +50,9 @@ def _search_terms_normalized(result: Mapping[str, Any]) -> list[str]:
         source_values = {}
     values = (
         result.get("customer_id"),
+        result.get("router_number"),
         result.get("dp_id"),
+        source_values.get("router_number"),
         source_values.get("phone_number"),
         source_values.get("address"),
     )
@@ -164,7 +169,8 @@ def _mark_customer_id_conflicts(
                 "$addToSet": {
                     "issue_codes": "CUSTOMER_ID_CONFLICT",
                     "findings": finding,
-                }
+                },
+                "$set": {"overall_status": FAIL, "has_fault": True},
             },
         )
         affected_rows += int(getattr(result, "modified_count", 0))
@@ -184,6 +190,81 @@ def _mark_customer_id_conflicts(
     }
 
 
+
+
+def _mark_dp_conflicted_rows(
+    *,
+    run_id: str,
+    customer_records: Collection,
+    dp_records: Collection,
+    batch_size: int = 500,
+) -> dict[str, int]:
+    """Attach a DP coordinate-conflict finding to its affected customer rows.
+
+    A DP may become conflicted only after a later processing batch is seen, so this
+    bounded post-pass ensures the earliest customer rows are included in the report.
+    All rows linked to the conflicted DP are marked because its reference location is
+    ambiguous; they are not used as evidence for DP distance-quality assessment.
+    """
+    if not hasattr(dp_records, "find") or not hasattr(customer_records, "update_many"):
+        return {"affected_rows": 0, "rows_newly_with_findings": 0}
+    if batch_size < 1:
+        raise ValueError("DP conflict batch_size must be at least 1")
+
+    cursor = dp_records.find(
+        {"run_id": run_id, "coordinate_consistency": "CONFLICT"},
+        {"_id": 0, "dp_id_normalized": 1},
+    ).batch_size(batch_size)
+    conflict_ids: list[str] = []
+    affected_rows = 0
+    newly_finding_rows = 0
+    finding = {
+        "code": "DP_COORD_CONFLICT",
+        "status": FAIL,
+        "severity": "warning",
+        "message": "This customer's DP ID has inconsistent coordinate observations; the DP reference location needs review.",
+    }
+
+    def apply_batch(ids: list[str]) -> None:
+        nonlocal affected_rows, newly_finding_rows
+        valid_ids = [value for value in ids if value]
+        if not valid_ids:
+            return
+        query = {
+            "run_id": run_id,
+            "dp_id_normalized": {"$in": valid_ids},
+            "issue_codes": {"$ne": "DP_COORD_CONFLICT"},
+        }
+        newly_finding_rows += customer_records.count_documents({
+            "run_id": run_id,
+            "dp_id_normalized": {"$in": valid_ids},
+            "issue_codes": [],
+        })
+        result = customer_records.update_many(
+            query,
+            {
+                "$addToSet": {
+                    "issue_codes": "DP_COORD_CONFLICT",
+                    "findings": finding,
+                },
+                "$set": {
+                    "overall_status": FAIL,
+                    "has_fault": True,
+                    "eligible_for_dp_assessment": False,
+                },
+            },
+        )
+        affected_rows += int(getattr(result, "modified_count", 0))
+
+    for item in cursor:
+        normalized_id = item.get("dp_id_normalized")
+        if normalized_id:
+            conflict_ids.append(str(normalized_id))
+        if len(conflict_ids) >= batch_size:
+            apply_batch(conflict_ids)
+            conflict_ids = []
+    apply_batch(conflict_ids)
+    return {"affected_rows": affected_rows, "rows_newly_with_findings": newly_finding_rows}
 
 
 def _valid_point(value: object) -> tuple[float, float] | None:
@@ -349,6 +430,8 @@ def process_csv_file(
     phone_area_check: Callable[[str, float, float], bool | None] | None = None,
     address_zone_check: Callable[[str, float, float], bool | None] | None = None,
     geography_check: Callable[[Mapping[str, Any], float, float], bool | None] | None = None,
+    route_distance_check: Callable[[float, float, float, float], float | None] | None = None,
+    geocode_address_check: Callable[[str, float, float], float | None] | None = None,
 ) -> dict[str, Any]:
     """Validate and persist a CSV in bounded batches.
 
@@ -400,6 +483,8 @@ def process_csv_file(
                         phone_area_check=phone_area_check,
                         address_zone_check=address_zone_check,
                         geography_check=geography_check,
+                        route_distance_check=route_distance_check,
+                        geocode_address_check=geocode_address_check,
                     )
                     for row in nonblank_batch
                 ]
@@ -441,12 +526,28 @@ def process_csv_file(
                             "row_number": result.get("row_number"),
                             "customer_id": result.get("customer_id"),
                             "customer_id_normalized": result.get("customer_id_normalized"),
+                            "router_number": result.get("router_number"),
+                            "calculated_customer_dp_distance_m": result.get("calculated_customer_dp_distance_m"),
+                            "overhead_distance_m": result.get("overhead_distance_m"),
+                            "overhead_distance_500m_status": result.get("overhead_distance_500m_status"),
+                            "google_route_distance_m": result.get("google_route_distance_m"),
+                            "distance_500m_m": result.get("distance_500m_m"),
+                            "distance_500m_status": result.get("distance_500m_status"),
+                            "distance_method": result.get("distance_method"),
+                            "customer_inside_sri_lanka": result.get("customer_inside_sri_lanka"),
+                            "overall_status": result.get("overall_status", "UNVERIFIED"),
+                            "has_fault": result.get("has_fault", False),
+                            "source_row_values": result.get("source_row_values", {}),
                             "dp_id": result.get("dp_id"),
                             "dp_id_normalized": result.get("dp_id_normalized"),
                             "source_values": result.get("source_values", {}),
                             "phone_normalized": "".join(
                                 character
-                                for character in str((result.get("source_values", {}) or {}).get("phone_number", "") or "")
+                                for character in str(
+                                    (result.get("source_values", {}) or {}).get("phone_number")
+                                    or (result.get("source_values", {}) or {}).get("router_number")
+                                    or ""
+                                )
                                 if character.isdigit()
                             ),
                             "search_terms_normalized": _search_terms_normalized(result),
@@ -500,6 +601,26 @@ def process_csv_file(
                     "$inc": {
                         "issue_counts.CUSTOMER_ID_CONFLICT": conflict_rows,
                         "rows_with_findings": customer_conflicts["rows_newly_with_findings"],
+                    },
+                    "$set": {"last_progress_at": utc_now()},
+                },
+            )
+
+        dp_conflicts = _mark_dp_conflicted_rows(
+            run_id=run_id,
+            customer_records=customer_records,
+            dp_records=dp_records,
+        )
+        dp_conflict_rows = dp_conflicts["affected_rows"]
+        if dp_conflict_rows:
+            counters["issue:DP_COORD_CONFLICT"] += dp_conflict_rows
+            counters["rows_with_findings"] += dp_conflicts["rows_newly_with_findings"]
+            validation_runs.update_one(
+                {"run_id": run_id},
+                {
+                    "$inc": {
+                        "issue_counts.DP_COORD_CONFLICT": dp_conflict_rows,
+                        "rows_with_findings": dp_conflicts["rows_newly_with_findings"],
                     },
                     "$set": {"last_progress_at": utc_now()},
                 },

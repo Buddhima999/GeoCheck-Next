@@ -163,6 +163,9 @@ def get_run_summary(run_id: str) -> dict[str, Any]:
     eligible_customers = customers.count_documents(
         {"run_id": run_id, "eligible_for_dp_assessment": True}
     )
+    faulty_customers = customers.count_documents({"run_id": run_id, "overall_status": "FAIL"})
+    unverified_customers = customers.count_documents({"run_id": run_id, "overall_status": "UNVERIFIED"})
+    passed_customers = customers.count_documents({"run_id": run_id, "overall_status": "PASS"})
     dp_total = dps.count_documents({"run_id": run_id})
     dp_consistent = dps.count_documents({"run_id": run_id, "coordinate_consistency": "CONSISTENT"})
     dp_conflict = dps.count_documents({"run_id": run_id, "coordinate_consistency": "CONFLICT"})
@@ -179,6 +182,9 @@ def get_run_summary(run_id: str) -> dict[str, Any]:
         "customer_rows_stored": customer_total,
         "rows_with_findings": customer_with_findings,
         "rows_with_hard_errors": customer_hard_errors,
+        "faulty_customers": faulty_customers,
+        "unverified_customers": unverified_customers,
+        "passed_customers": passed_customers,
         "eligible_for_dp_assessment": eligible_customers,
         "dp_count": dp_total,
         "dp_coordinate_consistent": dp_consistent,
@@ -220,6 +226,18 @@ def list_customer_results(
             "dp_id": 1,
             "dp_id_normalized": 1,
             "source_values": 1,
+            "source_row_values": 1,
+            "router_number": 1,
+            "calculated_customer_dp_distance_m": 1,
+            "overhead_distance_m": 1,
+            "overhead_distance_500m_status": 1,
+            "google_route_distance_m": 1,
+            "distance_500m_m": 1,
+            "distance_500m_status": 1,
+            "distance_method": 1,
+            "customer_inside_sri_lanka": 1,
+            "overall_status": 1,
+            "has_fault": 1,
             "customer_location": 1,
             "dp_location_observed": 1,
             "checks": 1,
@@ -395,10 +413,17 @@ def _csv_stream(cursor: Iterator[dict[str, Any]], fields: list[str]) -> Iterator
 def export_customer_results(
     run_id: str,
     issue_code: str | None = Query(default=None, max_length=80),
+    report_type: str = Query(default="all", max_length=20),
 ) -> StreamingResponse:
-    """Stream row findings to CSV instead of loading hundreds of thousands into RAM."""
+    """Stream the full audit, confirmed faults only, or rows needing verification."""
     _get_run_or_404(run_id)
+    if report_type not in {"all", "faults", "unverified"}:
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="report_type must be all, faults or unverified.")
     query: dict[str, Any] = {"run_id": run_id}
+    if report_type == "faults":
+        query["overall_status"] = "FAIL"
+    elif report_type == "unverified":
+        query["overall_status"] = "UNVERIFIED"
     if issue_code and issue_code.strip():
         query["issue_codes"] = issue_code.strip().upper()
     cursor = customer_records.find(
@@ -408,9 +433,19 @@ def export_customer_results(
             "row_number": 1,
             "customer_id": 1,
             "dp_id": 1,
-            "source_values.reported_province": 1,
-            "source_values.reported_district": 1,
-            "source_values.reported_region": 1,
+            "source_values": 1,
+            "source_row_values": 1,
+            "router_number": 1,
+            "calculated_customer_dp_distance_m": 1,
+            "overhead_distance_m": 1,
+            "overhead_distance_500m_status": 1,
+            "google_route_distance_m": 1,
+            "distance_500m_m": 1,
+            "distance_500m_status": 1,
+            "distance_method": 1,
+            "customer_inside_sri_lanka": 1,
+            "overall_status": 1,
+            "checks": 1,
             "customer_location": 1,
             "dp_location_observed": 1,
             "issue_codes": 1,
@@ -421,12 +456,27 @@ def export_customer_results(
     fields = [
         "row_number",
         "customer_id",
+        "router_number",
+        "address",
+        "customer_latitude",
+        "customer_longitude",
         "dp_id",
-        "reported_province",
-        "reported_district",
-        "reported_region",
-        "customer_location",
-        "dp_location_observed",
+        "dp_latitude",
+        "dp_longitude",
+        "line_distance_m",
+        "calculated_customer_dp_distance_m",
+        "overhead_distance_m",
+        "overhead_distance_500m_status",
+        "reported_overhead_distance_m",
+        "google_route_distance_m",
+        "distance_500m_m",
+        "distance_method",
+        "distance_500m_status",
+        "line_distance_status",
+        "customer_inside_sri_lanka",
+        "address_match_status",
+        "overall_status",
+        "source_row_values",
         "issue_codes",
         "findings",
         "has_hard_error",
@@ -438,12 +488,27 @@ def export_customer_results(
             yield {
                 "row_number": doc.get("row_number"),
                 "customer_id": doc.get("customer_id"),
+                "router_number": doc.get("router_number") or source.get("router_number") or source.get("phone_number"),
+                "address": source.get("address"),
+                "customer_latitude": source.get("customer_latitude"),
+                "customer_longitude": source.get("customer_longitude"),
                 "dp_id": doc.get("dp_id"),
-                "reported_province": source.get("reported_province"),
-                "reported_district": source.get("reported_district"),
-                "reported_region": source.get("reported_region"),
-                "customer_location": doc.get("customer_location"),
-                "dp_location_observed": doc.get("dp_location_observed"),
+                "dp_latitude": source.get("dp_latitude"),
+                "dp_longitude": source.get("dp_longitude"),
+                "line_distance_m": source.get("line_distance_m"),
+                "calculated_customer_dp_distance_m": doc.get("calculated_customer_dp_distance_m"),
+                "overhead_distance_m": doc.get("overhead_distance_m"),
+                "overhead_distance_500m_status": doc.get("overhead_distance_500m_status") or (doc.get("checks") or {}).get("overhead_distance_500m", {}).get("status"),
+                "reported_overhead_distance_m": source.get("overhead_distance_m"),
+                "google_route_distance_m": doc.get("google_route_distance_m"),
+                "distance_500m_m": doc.get("distance_500m_m"),
+                "distance_method": doc.get("distance_method"),
+                "distance_500m_status": doc.get("distance_500m_status") or (doc.get("checks") or {}).get("customer_dp_distance", {}).get("status"),
+                "line_distance_status": (doc.get("checks") or {}).get("line_distance", {}).get("status"),
+                "customer_inside_sri_lanka": doc.get("customer_inside_sri_lanka"),
+                "address_match_status": (doc.get("checks") or {}).get("address_zone", {}).get("status"),
+                "overall_status": doc.get("overall_status", "UNVERIFIED"),
+                "source_row_values": doc.get("source_row_values") or source,
                 "issue_codes": doc.get("issue_codes"),
                 "findings": doc.get("findings"),
                 "has_hard_error": doc.get("has_hard_error"),
@@ -452,7 +517,7 @@ def export_customer_results(
     return StreamingResponse(
         _csv_stream(mapped_rows(), fields),
         media_type="text/csv; charset=utf-8",
-        headers={"Content-Disposition": f'attachment; filename="geocheck-{run_id}-customers.csv"'},
+        headers={"Content-Disposition": f'attachment; filename="geocheck-{run_id}-{report_type}-customers.csv"'},
     )
 
 

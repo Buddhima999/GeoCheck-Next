@@ -15,7 +15,7 @@ from pymongo.errors import PyMongoError
 from ..config import settings
 from ..database import validation_runs
 from ..upload_storage import resolve_upload_path, upload_directory
-from ..validation.csv_import import FIELD_ALIASES, REQUIRED_COORDINATE_FIELDS, detect_mapping, normalize_header, validate_mapping
+from ..validation.csv_import import FIELD_ALIASES, REQUIRED_AUDIT_FIELDS, REQUIRED_COORDINATE_FIELDS, detect_mapping, normalize_header, validate_audit_mapping, validate_mapping
 
 router = APIRouter(prefix="/api/validation-runs", tags=["validation-runs"])
 _CHUNK_BYTES = 1024 * 1024
@@ -66,7 +66,7 @@ def _parse_mapping(raw_mapping: str | None, headers: list[str]) -> dict[str, str
         if unknown:
             raise ValueError(f"Unsupported logical field name(s): {', '.join(sorted(unknown))}")
         mapping = parsed
-    validate_mapping(headers, mapping)
+    validate_audit_mapping(headers, mapping)
     return dict(mapping)
 
 
@@ -168,11 +168,15 @@ async def preview_validation_csv(file: UploadFile = File(...)) -> dict[str, Any]
         if len({normalize_header(header) for header in headers}) != len(headers):
             raise ValueError("CSV contains duplicate column headers after normalization.")
         detected = detect_mapping(headers)
+        required_fields = list(REQUIRED_AUDIT_FIELDS)
+        # Backward-compatible imports may call the service number phone_number.
+        if "router_number" not in detected and "phone_number" in detected:
+            required_fields = ["phone_number" if field == "router_number" else field for field in required_fields]
         return {
             "headers": headers,
             "detected_mapping": detected,
             "supported_fields": list(FIELD_ALIASES),
-            "required_fields": list(REQUIRED_COORDINATE_FIELDS),
+            "required_fields": required_fields,
             "file_name": _display_filename(file.filename),
         }
     except HTTPException:
