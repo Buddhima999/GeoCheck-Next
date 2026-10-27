@@ -6,7 +6,7 @@ The customer audit upload expects one CSV row per customer with the following ma
 
 ```csv
 customer_id,router_number,customer_latitude,customer_longitude,cust_address,dp_id,dp_latitude,dp_longitude,line_distance_m
-CUST-001,RT-001,6.9272,79.8613,"Example Road, Colombo",DP-001,6.9271,79.8612,120
+CUST-001,0112345211,6.9272,79.8613,"Example Road, Colombo",DP-001,6.9271,79.8612,120
 ```
 
 The example values are illustrative only; do not use them as provider data. Headers are matched case-insensitively with punctuation/space normalization and aliases such as `cust_address` → `address`. If your source uses `phone_number` instead of `router_number`, it can be mapped as a legacy alternative.
