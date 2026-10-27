@@ -37,7 +37,7 @@ The confirmed `line_distance_m` unit is metres. It is checked for a finite, non-
 - The service is not yet benchmarked at 600,000 rows.
 - A DP's conflict check compares each new point with the DP's first valid observation. It does not compute the exact maximum pairwise distance over every observation.
 - MongoDB integration has unit tests using in-memory collection fakes, but no live MongoDB integration test has been run.
-- The provider's boundary tolerance, official regions, LEA table and overhead-distance meaning remain unconfirmed.
+- The provider's boundary tolerance, official regions, and LEA table remain unconfirmed. `overhead_distance_m` semantics are confirmed as straight-line customer-to-DP distance, but the configured 25 m comparison tolerance still needs operational approval.
 
 ## Verification
 
