@@ -1,4 +1,4 @@
-import { FormEvent, useCallback, useEffect, useMemo, useState } from "react";
+import { type FormEvent, useCallback, useEffect, useMemo, useState } from "react";
 import {
   Activity, AlertTriangle, ArrowDownToLine, Check, CheckCircle2, ChevronLeft,
   ChevronRight, CircleHelp, Clock3, Database, FileCheck2, FileSpreadsheet,
