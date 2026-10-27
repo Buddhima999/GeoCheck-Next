@@ -171,6 +171,65 @@ class MongoIntegrationTests(unittest.TestCase):
                 self.assertNotIn("input_file_key", run)
                 self.assertFalse(upload_path.exists())
 
+    def test_customer_id_conflicts_are_detected_across_batch_boundaries(self):
+        rows = [
+            self.make_row("SYN-DUP", 6.90010, 79.85010, 16),
+            self.make_row("SYN-DUP", 6.90020, 79.85020, 31),
+        ]
+        rows[0]["address"] = "Synthetic Row One Road"
+        rows[1]["address"] = "Synthetic Row Two Road"
+        run_id = "duplicate-" + uuid.uuid4().hex
+        file_key = uuid.uuid4().hex + ".csv"
+
+        with tempfile.TemporaryDirectory() as temp:
+            with patch.object(settings, "upload_dir", Path(temp)):
+                upload_path = worker.resolve_upload_path(file_key)
+                with upload_path.open("w", newline="", encoding="utf-8") as stream:
+                    writer = csv.DictWriter(stream, fieldnames=HEADERS)
+                    writer.writeheader()
+                    writer.writerows(rows)
+
+                self.runs.insert_one({
+                    "run_id": run_id,
+                    "status": "QUEUED",
+                    "created_at": datetime.now(timezone.utc),
+                    "input_file_key": file_key,
+                    "column_mapping": detect_mapping(HEADERS),
+                    "attempt_count": 0,
+                    "issue_counts": {},
+                })
+                with patch.object(settings, "max_csv_rows", 100):
+                    worked = worker.process_next_queued_run(
+                        run_collection=self.runs,
+                        customer_collection=self.customers,
+                        dp_collection=self.dps,
+                        worker_id="duplicate-integration-worker",
+                        batch_size=1,
+                        max_rows=100,
+                    )
+
+                self.assertTrue(worked)
+                run = self.runs.find_one({"run_id": run_id})
+                self.assertEqual(run["status"], "COMPLETED", run.get("last_error"))
+                self.assertEqual(run["rows_processed"], 2)
+                self.assertEqual(run["rows_with_findings"], 2)
+                self.assertEqual(run["issue_counts"]["CUSTOMER_ID_CONFLICT"], 2)
+                self.assertEqual(
+                    self.customers.count_documents({
+                        "run_id": run_id,
+                        "issue_codes": "CUSTOMER_ID_CONFLICT",
+                    }),
+                    2,
+                )
+                self.assertEqual(
+                    self.customers.count_documents({
+                        "run_id": run_id,
+                        "search_terms_normalized": {"$regex": "^syndup"},
+                    }),
+                    2,
+                )
+                self.assertFalse(upload_path.exists())
+
 
 if __name__ == "__main__":
     unittest.main()
