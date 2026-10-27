@@ -8,7 +8,7 @@ sys.path.insert(0, str(ROOT))
 
 from app.validation.csv_import import detect_mapping, iter_mapped_rows, validate_mapping
 from app.validation.rules import (
-    FAIL, NOT_APPLICABLE, PASS, UNVERIFIED,
+    FAIL, NOT_APPLICABLE, PASS, UNVERIFIED, ValidationSettings,
     haversine_m, validate_dataset_small, validate_row,
 )
 
@@ -122,12 +122,63 @@ class RuleTests(unittest.TestCase):
         self.assertNotIn("OVERHEAD_DISTANCE_MISMATCH", result["issue_codes"])
         self.assertEqual(result["checks"]["overhead_distance"]["status"], UNVERIFIED)
 
-    def test_line_distance_has_no_unapproved_maximum(self):
+    def test_reported_line_distance_is_not_given_a_fake_500m_cable_limit(self):
         row = self.good_row()
         row["line_distance_m"] = "9000"
         result = validate_row(row)
         self.assertNotIn("LINE_DISTANCE_LIMIT", result["issue_codes"])
         self.assertEqual(result["checks"]["line_distance"]["status"], PASS)
+
+    def test_google_routes_distance_is_used_for_the_500m_rule_when_configured(self):
+        row = self.good_row()
+        row["router_number"] = "ROUTER-001"
+        result = validate_row(
+            row,
+            settings=ValidationSettings(distance_method="google_routes", max_line_distance_m=None),
+            country_check=lambda lat, lon: True,
+            route_distance_check=lambda c_lat, c_lon, d_lat, d_lon: 700.0,
+        )
+        self.assertEqual(result["checks"]["google_route_distance"]["status"], FAIL)
+        self.assertEqual(result["checks"]["customer_dp_distance"]["distance_m"], 700.0)
+        self.assertEqual(result["checks"]["customer_dp_distance"]["method"], "google_routes")
+        self.assertIn("CUSTOMER_DP_DISTANCE", result["issue_codes"])
+        # Haversine remains a separate measurement and is never overwritten.
+        self.assertLess(result["calculated_customer_dp_distance_m"], 500.0)
+
+    def test_google_routes_unavailable_stays_unverified_without_straight_line_fallback(self):
+        row = self.good_row()
+        result = validate_row(
+            row,
+            settings=ValidationSettings(distance_method="google_routes", max_line_distance_m=None),
+            country_check=lambda lat, lon: True,
+            route_distance_check=lambda c_lat, c_lon, d_lat, d_lon: None,
+        )
+        self.assertEqual(result["checks"]["customer_dp_distance"]["status"], UNVERIFIED)
+        self.assertEqual(result["checks"]["google_route_distance"]["status"], UNVERIFIED)
+        self.assertIn("CUSTOMER_DP_ROUTE_UNVERIFIED", result["issue_codes"])
+        self.assertNotIn("CUSTOMER_DP_DISTANCE", result["issue_codes"])
+
+    def test_google_geocoded_address_distance_is_checked_against_tolerance(self):
+        row = self.good_row()
+        row["router_number"] = "ROUTER-001"
+        result = validate_row(
+            row,
+            country_check=lambda lat, lon: True,
+            geocode_address_check=lambda address, lat, lon: 900.0,
+        )
+        self.assertEqual(result["checks"]["address_zone"]["status"], FAIL)
+        self.assertIn("ADDRESS_LOCATION_MISMATCH", result["issue_codes"])
+
+    def test_google_geocoded_address_can_pass_within_tolerance(self):
+        row = self.good_row()
+        row["router_number"] = "ROUTER-001"
+        result = validate_row(
+            row,
+            country_check=lambda lat, lon: True,
+            geocode_address_check=lambda address, lat, lon: 25.0,
+        )
+        self.assertEqual(result["checks"]["address_zone"]["status"], PASS)
+        self.assertNotIn("ADDRESS_LOCATION_MISMATCH", result["issue_codes"])
 
     def test_cross_row_duplicate_and_dp_coordinate_conflicts(self):
         first = self.good_row()
