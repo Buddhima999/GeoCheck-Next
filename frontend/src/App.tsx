@@ -30,6 +30,7 @@ type ValidationRun = {
   summary?: Record<string, number>;
 };
 type RunPage = { items: ValidationRun[]; total: number; limit: number; skip: number };
+type CsvPreview = { headers: string[]; detected_mapping: Record<string, string>; supported_fields: string[]; required_fields: string[]; file_name: string };
 type RunSummary = {
   run_id: string;
   status: RunStatus;
@@ -140,6 +141,9 @@ export default function App() {
   const [referenceStatus, setReferenceStatus] = useState<ReferenceStatus | null>(null);
   const [loadingReferences, setLoadingReferences] = useState(false);
   const [file, setFile] = useState<File | null>(null);
+  const [csvPreview, setCsvPreview] = useState<CsvPreview | null>(null);
+  const [columnMapping, setColumnMapping] = useState<Record<string, string>>({});
+  const [previewing, setPreviewing] = useState(false);
   const [uploading, setUploading] = useState(false);
   const [loadingRuns, setLoadingRuns] = useState(false);
   const [error, setError] = useState("");
@@ -161,6 +165,31 @@ export default function App() {
     if (apiKey.trim()) headers.set("X-API-Key", apiKey.trim());
     return fetch(path, { ...init, headers });
   }, [apiKey]);
+
+  const previewFile = useCallback(async (selectedFile: File | null) => {
+    if (!selectedFile || !apiKey.trim() || !selectedFile.name.toLowerCase().endsWith(".csv")) {
+      setCsvPreview(null);
+      setColumnMapping({});
+      return;
+    }
+    setPreviewing(true);
+    setError("");
+    const form = new FormData();
+    form.append("file", selectedFile);
+    try {
+      const response = await apiFetch("/api/validation-runs/preview", { method: "POST", body: form });
+      const preview = await readJson<CsvPreview>(response);
+      setCsvPreview(preview);
+      setColumnMapping(preview.detected_mapping);
+      setNotice("Detected " + preview.headers.length + " CSV columns. Review required mappings before uploading.");
+    } catch (cause) {
+      setCsvPreview(null);
+      setColumnMapping({});
+      setError(cause instanceof Error ? cause.message : "Could not preview CSV headers.");
+    } finally {
+      setPreviewing(false);
+    }
+  }, [apiFetch, apiKey]);
 
   const loadRuns = useCallback(async (showSpinner = true) => {
     if (!apiKey.trim()) {
@@ -266,6 +295,10 @@ export default function App() {
   }, [apiKey, loadRuns]);
 
   useEffect(() => {
+    if (file && apiKey.trim()) void previewFile(file);
+  }, [file, apiKey, previewFile]);
+
+  useEffect(() => {
     if (!selectedRunId || !apiKey.trim()) return;
     void loadRun(selectedRunId);
   }, [selectedRunId, apiKey, loadRun]);
@@ -347,8 +380,12 @@ export default function App() {
     if (!apiKey.trim()) { setError("Enter your GEOCHECK_API_KEY first."); return; }
     if (!file) { setError("Choose a CSV file first."); return; }
     if (!file.name.toLowerCase().endsWith(".csv")) { setError("Please choose a .csv file."); return; }
+    if (!csvPreview) { setError("Wait until the CSV header preview is ready."); return; }
+    const missingRequired = csvPreview.required_fields.filter((field) => !columnMapping[field]);
+    if (missingRequired.length) { setError("Map these required fields: " + missingRequired.join(", ")); return; }
     const form = new FormData();
     form.append("file", file);
+    form.append("column_mapping", JSON.stringify(columnMapping));
     setUploading(true);
     try {
       const response = await apiFetch("/api/validation-runs", { method: "POST", body: form });
@@ -357,6 +394,8 @@ export default function App() {
       setRun(data);
       setSummary(null);
       setFile(null);
+      setCsvPreview(null);
+      setColumnMapping({});
       setTab("upload");
       setNotice(`Accepted ${data.original_filename || "CSV"} into the validation queue.`);
       await loadRuns(false);
