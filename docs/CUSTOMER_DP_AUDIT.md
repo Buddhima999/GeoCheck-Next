@@ -1,0 +1,60 @@
+# Customer and DP fault audit
+
+## Upload schema
+
+The customer audit upload expects one CSV row per customer with the following mapped columns:
+
+```csv
+customer_id,router_number,customer_latitude,customer_longitude,cust_address,dp_id,dp_latitude,dp_longitude,line_distance_m
+CUST-001,RT-001,6.9272,79.8613,"Example Road, Colombo",DP-001,6.9271,79.8612,120
+```
+
+The example values are illustrative only; do not use them as provider data. Headers are matched case-insensitively with punctuation/space normalization and aliases such as `cust_address` → `address`. If your source uses `phone_number` instead of `router_number`, it can be mapped as a legacy alternative.
+
+The router/service number is treated as an opaque identifier, not automatically as a phone number. The application cannot prove that it is active or assigned to the given customer without an authorized provider lookup.
+
+## Main rules
+
+- Customer ID, router/service number, address, DP ID, customer coordinates, DP coordinates and line distance are required fields. Missing or malformed values generate findings.
+- Both coordinate pairs must be finite geographic coordinates with valid global ranges. The checker flags missing coordinates, invalid values, the `(0,0)` placeholder and possible latitude/longitude swaps.
+- The configured Sri Lanka polygon determines whether a valid customer point is inside or outside the loaded boundary. A missing/ambiguous polygon returns `UNVERIFIED`, not `PASS`.
+- Customer-to-DP distance is checked against `CUSTOMER_DP_LIMIT_M` (default 500 m). The default `DISTANCE_METHOD=straight_line` uses the Haversine formula and works without a network or Google billing.
+- `DISTANCE_METHOD=google_routes` asks Google Maps Routes API for a driving-road route distance. That value is not the actual aerial overhead cable length. If no route can be returned, the check is `UNVERIFIED`; the system never substitutes the straight-line distance in place of a missing route.
+- `line_distance_m` is validated as finite, numeric and non-negative. No limit is applied to cable distance by default because a cable path can differ from a straight-line or road-route measurement. Set `MAX_LINE_DISTANCE_M` only if the provider has approved a true business threshold.
+- If Google Geocoding is enabled, the returned point is compared to the supplied customer coordinate using `GOOGLE_ADDRESS_MATCH_TOLERANCE_M` (default 500 m). A failed lookup stays `UNVERIFIED`; the system doesn't state that the address is wrong without enough evidence.
+- If Google Geocoding is off, address-zone checks require approved locality polygons. The included Sri Lanka country boundary is not a full address or street geocoder.
+- Repeated DP IDs with coordinates that conflict beyond the configured tolerance are flagged. Customer ID conflicts across the run are also flagged.
+
+## Status meanings
+
+- `PASS`: the configured rule is satisfied.
+- `FAIL`: sufficient evidence shows a fault.
+- `UNVERIFIED`: the information/reference is missing, ambiguous, or an external lookup could not be completed.
+- `NOT_APPLICABLE`: the rule does not apply to the supplied field or profile.
+
+A single row may have several finding codes, but it counts once as a faulty customer. Dashboard counts distinguish faults from rows requiring verification.
+
+## Reports
+
+From **Customer & DP results**, select a completed run and use:
+
+- **Full report** — all customer rows with original values, calculated distances, per-check statuses and findings.
+- **Faults only** — rows whose overall status is `FAIL`.
+- **Unverified** — rows whose overall status is `UNVERIFIED`.
+- **Export DPs** — DP coordinate-consistency and customer-association summary.
+
+CSV exports preserve source values in the `source_row_values` JSON column as well as dedicated columns for the primary audit fields. Source data is formula-escaped for spreadsheet safety.
+
+## Optional Google Maps setup
+
+1. In Google Cloud, enable Routes API if road-route distance is required, and Geocoding API if address geocoding is required.
+2. Configure billing and create a server key restricted to only the APIs and server usage you need. Google documents that Routes API requests use a required field mask; this implementation requests `routes.distanceMeters` only: [Compute Routes documentation](https://developers.google.com/maps/documentation/routes/compute_route_directions).
+3. In the root `.env` used by Docker Compose, set `GOOGLE_MAPS_SERVER_KEY`. Keep it on the backend only.
+4. Set `DISTANCE_METHOD=google_routes` for the road-route 500 m check. Set `GOOGLE_GEOCODING_ENABLED=true` to enable address geocoding.
+5. Keep `GOOGLE_MAPS_MAX_REQUESTS_PER_RUN` bounded to control API usage. The worker caches repeated addresses and coordinate pairs during a run.
+
+The default configuration does not need Google Maps and uses the direct distance. Google usage can incur charges and should be reviewed against the current Google Maps Platform pricing and terms before production use.
+
+## Boundary data warning
+
+`backend/reference-data/country_boundary.geojson` was copied from the user's earlier `Buddhima999/geocheck-vercel` repository. It has not been independently certified against an official legal boundary or reviewed for all islands, coastal detail, inland water, or license terms. Review it with the provider before using boundary results as operational evidence. The app records its SHA-256 digest with each run.
