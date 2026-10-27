@@ -38,7 +38,8 @@ def _get_run_or_404(run_id: str) -> dict[str, Any]:
     return run
 
 
-def _safe_search_query(query: str | None, fields: tuple[str, ...]) -> dict[str, Any] | None:
+def _customer_search_query(query: str | None) -> dict[str, Any] | None:
+    """Search pre-normalized row terms using indexed prefix expressions."""
     if query is None or not query.strip():
         return None
     needle = query.strip()
@@ -47,13 +48,44 @@ def _safe_search_query(query: str | None, fields: tuple[str, ...]) -> dict[str, 
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
             detail=f"Search text must be at most {MAX_QUERY_LENGTH} characters.",
         )
-    pattern = re.escape(needle)
-    return {
-        "$or": [
-            {field: {"$regex": pattern, "$options": "i"}}
-            for field in fields
+    compact = "".join(character for character in needle.casefold() if character.isalnum())
+    tokens: list[str] = []
+    current: list[str] = []
+    for character in needle.casefold():
+        if character.isalnum():
+            current.append(character)
+        elif current:
+            tokens.append("".join(current))
+            current = []
+    if current:
+        tokens.append("".join(current))
+    if not compact:
+        return None
+
+    compact_prefix = {"search_terms_normalized": {"$regex": "^" + re.escape(compact)}}
+    if len(tokens) <= 1:
+        return compact_prefix
+    token_query = {
+        "$and": [
+            {"search_terms_normalized": {"$regex": "^" + re.escape(token)}}
+            for token in tokens
         ]
     }
+    return {"$or": [compact_prefix, token_query]}
+
+
+def _dp_search_query(query: str | None) -> dict[str, Any] | None:
+    """Use the indexed normalized DP identifier for predictable-prefix searches."""
+    if query is None or not query.strip():
+        return None
+    needle = query.strip()
+    if len(needle) > MAX_QUERY_LENGTH:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=f"Search text must be at most {MAX_QUERY_LENGTH} characters.",
+        )
+    normalized = needle.casefold()
+    return {"dp_id_normalized": {"$regex": "^" + re.escape(normalized)}}
 
 
 def _and_queries(*queries: dict[str, Any] | None) -> dict[str, Any]:
@@ -168,15 +200,7 @@ def list_customer_results(
     _get_run_or_404(run_id)
     query = _and_queries(
         {"run_id": run_id},
-        _safe_search_query(
-            q,
-            (
-                "customer_id",
-                "dp_id",
-                "source_values.phone_number",
-                "source_values.address",
-            ),
-        ),
+        _customer_search_query(q),
         {"issue_codes": issue_code.strip().upper()} if issue_code and issue_code.strip() else None,
         {"eligible_for_dp_assessment": eligible_for_dp_assessment}
         if eligible_for_dp_assessment is not None else None,
@@ -217,7 +241,7 @@ def list_dp_results(
     _get_run_or_404(run_id)
     query_parts: list[dict[str, Any] | None] = [
         {"run_id": run_id},
-        _safe_search_query(q, ("dp_id", "dp_id_normalized")),
+        _dp_search_query(q),
     ]
     if consistency:
         normalized = consistency.strip().upper()
