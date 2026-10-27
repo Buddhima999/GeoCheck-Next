@@ -95,6 +95,103 @@ def _collection_rows(collection: Collection, query: dict[str, Any], projection: 
     return list(collection.find(query, projection))
 
 
+def _mark_customer_id_conflicts(
+    *,
+    run_id: str,
+    customer_records: Collection,
+    batch_size: int = 500,
+) -> dict[str, int]:
+    """Mark source rows whose normalized customer ID has conflicting signatures.
+
+    MongoDB performs cross-row grouping with disk spill enabled. The cursor and update
+    batches stay bounded so this works with large imports without loading all rows
+    into Python memory. In-memory collection fakes skip this; live MongoDB tests cover it.
+    """
+    if not hasattr(customer_records, "aggregate"):
+        return {"affected_rows": 0, "rows_newly_with_findings": 0}
+    if batch_size < 1:
+        raise ValueError("customer conflict batch_size must be at least 1")
+
+    pipeline = [
+        {"$match": {"run_id": run_id, "customer_id_normalized": {"$ne": None}}},
+        {
+            "$group": {
+                "_id": {
+                    "customer_id_normalized": "$customer_id_normalized",
+                    "latitude": {"$round": ["$customer_location.lat", 5]},
+                    "longitude": {"$round": ["$customer_location.lon", 5]},
+                    "address": {
+                        "$toLower": {
+                            "$trim": {"input": {"$ifNull": ["$source_values.address", ""]}}
+                        }
+                    },
+                    "phone": {
+                        "$regexReplace": {
+                            "input": {"$ifNull": ["$source_values.phone_number", ""]},
+                            "regex": "[^0-9]",
+                            "replacement": "",
+                        }
+                    },
+                },
+                "signature_rows": {"$sum": 1},
+            }
+        },
+        {
+            "$group": {
+                "_id": "$_id.customer_id_normalized",
+                "distinct_signatures": {"$sum": 1},
+            }
+        },
+        {"$match": {"distinct_signatures": {"$gt": 1}}},
+        {"$project": {"_id": 0, "customer_id_normalized": "$_id"}},
+    ]
+    cursor = customer_records.aggregate(pipeline, allowDiskUse=True).batch_size(batch_size)
+    conflict_ids: list[str] = []
+    affected_rows = 0
+    newly_finding_rows = 0
+    finding = {
+        "code": "CUSTOMER_ID_CONFLICT",
+        "status": FAIL,
+        "severity": "warning",
+        "message": "Customer ID occurs on multiple rows with different coordinates or identifying details.",
+    }
+
+    def apply_batch(ids: list[str]) -> None:
+        nonlocal affected_rows, newly_finding_rows
+        if not ids:
+            return
+        base_query = {"run_id": run_id, "customer_id_normalized": {"$in": ids}}
+        newly_finding_rows += customer_records.count_documents(
+            {**base_query, "issue_codes": []}
+        )
+        result = customer_records.update_many(
+            {**base_query, "issue_codes": {"$ne": "CUSTOMER_ID_CONFLICT"}},
+            {
+                "$addToSet": {
+                    "issue_codes": "CUSTOMER_ID_CONFLICT",
+                    "findings": finding,
+                }
+            },
+        )
+        affected_rows += int(getattr(result, "modified_count", 0))
+
+    for item in cursor:
+        normalized_id = item.get("customer_id_normalized")
+        if normalized_id:
+            conflict_ids.append(str(normalized_id))
+        if len(conflict_ids) >= batch_size:
+            apply_batch(conflict_ids)
+            conflict_ids = []
+    apply_batch(conflict_ids)
+
+    return {
+        "affected_rows": affected_rows,
+        "rows_newly_with_findings": newly_finding_rows,
+    }
+
+
+
+
 def _valid_point(value: object) -> tuple[float, float] | None:
     if not isinstance(value, Mapping):
         return None
@@ -377,6 +474,25 @@ def process_csv_file(
                 for code, value in issue_delta.items():
                     progress_update["$inc"][f"issue_counts.{code}"] = value
                 validation_runs.update_one({"run_id": run_id}, progress_update)
+
+        customer_conflicts = _mark_customer_id_conflicts(
+            run_id=run_id,
+            customer_records=customer_records,
+        )
+        conflict_rows = customer_conflicts["affected_rows"]
+        if conflict_rows:
+            counters["issue:CUSTOMER_ID_CONFLICT"] += conflict_rows
+            counters["rows_with_findings"] += customer_conflicts["rows_newly_with_findings"]
+            validation_runs.update_one(
+                {"run_id": run_id},
+                {
+                    "$inc": {
+                        "issue_counts.CUSTOMER_ID_CONFLICT": conflict_rows,
+                        "rows_with_findings": customer_conflicts["rows_newly_with_findings"],
+                    },
+                    "$set": {"last_progress_at": utc_now()},
+                },
+            )
 
         completed = utc_now()
         summary = {
