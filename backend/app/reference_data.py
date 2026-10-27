@@ -26,8 +26,18 @@ _LOCALITY_LEVELS = {"locality", "town", "village", "ds division", "ds_division",
 _REQUIRED_REGION_COLUMNS = {"province", "district", "region"}
 
 
+def _word_tokens(value: object) -> tuple[str, ...]:
+    return tuple(re.findall(r"[^\\W_]+", str(value or "").casefold(), flags=re.UNICODE))
+
+
 def _normalize_label(value: object) -> str:
     return "".join(char for char in str(value or "").casefold() if char.isalnum())
+
+
+def _contains_token_sequence(haystack: tuple[str, ...], needle: tuple[str, ...]) -> bool:
+    if not needle or len(needle) > len(haystack):
+        return False
+    return any(haystack[index:index + len(needle)] == needle for index in range(len(haystack) - len(needle) + 1))
 
 
 def _clean_phone(value: object) -> str:
@@ -254,6 +264,37 @@ class ReferenceData:
         self.provider_regions = provider_regions
         self.versions = versions
 
+        self.has_province_features = any(_level(feature) in _PROVINCE_LEVELS for feature in admin_features)
+        self.has_district_features = any(_level(feature) in _DISTRICT_LEVELS for feature in admin_features)
+        self.locality_by_token: dict[str, list[tuple[tuple[str, ...], SpatialFeature]]] = {}
+        generic_tokens = {
+            "road", "rd", "street", "st", "lane", "ln", "avenue", "ave",
+            "town", "city", "village", "division", "locality", "area",
+            "north", "south", "east", "west", "central",
+        }
+        for feature in admin_features:
+            if _level(feature) not in _LOCALITY_LEVELS:
+                continue
+            raw_names = [_prop(feature, "name", "locality", "town", "village", "ds_division")]
+            aliases = feature.properties.get("aliases", [])
+            if isinstance(aliases, list):
+                raw_names.extend(str(alias) for alias in aliases)
+            for raw_name in raw_names:
+                tokens = _word_tokens(raw_name)
+                if len(_normalize_label(raw_name)) < 3 or not tokens:
+                    continue
+                searchable = [token for token in tokens if token not in generic_tokens] or list(tokens)
+                for token in set(searchable):
+                    self.locality_by_token.setdefault(token, []).append((tokens, feature))
+
+        self.lea_by_prefix: dict[str, list[SpatialFeature]] = {}
+        self.max_phone_prefix_length = 0
+        for feature in lea_features:
+            prefix = _clean_phone(_prop(feature, "phone_prefix", "prefix", "area_code"))
+            if prefix:
+                self.lea_by_prefix.setdefault(prefix, []).append(feature)
+                self.max_phone_prefix_length = max(self.max_phone_prefix_length, len(prefix))
+
     @classmethod
     def load(cls, root: Path | None = None) -> "ReferenceData":
         base = (root or settings.resolved_reference_data_dir).resolve()
@@ -300,42 +341,34 @@ class ReferenceData:
         return any(feature.contains(lon, lat) for feature in self.country_index.candidates(lon, lat))
 
     def address_zone_check(self, address: str, lat: float, lon: float) -> bool | None:
-        if not self.admin_index.features:
+        if not self.locality_by_token:
             return None
-        normalized_address = _normalize_label(address)
-        if len(normalized_address) < 3:
+        address_tokens = _word_tokens(address)
+        if not address_tokens:
             return None
-        candidates: list[SpatialFeature] = []
-        for feature in self.admin_index.features:
-            if _level(feature) not in _LOCALITY_LEVELS:
-                continue
-            names = {
-                _normalize_label(_prop(feature, "name", "locality", "town", "village", "ds_division")),
-            }
-            aliases = feature.properties.get("aliases", [])
-            if isinstance(aliases, list):
-                names.update(_normalize_label(alias) for alias in aliases)
-            if any(len(name) >= 3 and name in normalized_address for name in names):
-                candidates.append(feature)
-        if not candidates:
+        candidate_names: dict[tuple[tuple[str, ...], int], SpatialFeature] = {}
+        for token in set(address_tokens):
+            for name_tokens, feature in self.locality_by_token.get(token, []):
+                if _contains_token_sequence(address_tokens, name_tokens):
+                    candidate_names[(name_tokens, id(feature))] = feature
+        if not candidate_names:
             return None
-        return any(feature.contains(lon, lat) for feature in candidates)
+        return any(feature.contains(lon, lat) for feature in candidate_names.values())
 
     def phone_area_check(self, phone: str, lat: float, lon: float) -> bool | None:
-        if not self.lea_index.features:
+        if not self.lea_by_prefix:
             return None
         normalized_phone = _clean_phone(phone)
         if not normalized_phone:
             return None
-        matched: list[tuple[int, SpatialFeature]] = []
-        for feature in self.lea_index.features:
-            prefix = _clean_phone(_prop(feature, "phone_prefix", "prefix", "area_code"))
-            if prefix and normalized_phone.startswith(prefix):
-                matched.append((len(prefix), feature))
-        if not matched:
+        best: list[SpatialFeature] = []
+        max_length = min(len(normalized_phone), self.max_phone_prefix_length)
+        for length in range(1, max_length + 1):
+            match = self.lea_by_prefix.get(normalized_phone[:length])
+            if match:
+                best = match
+        if not best:
             return None
-        longest = max(length for length, _ in matched)
-        best = [feature for length, feature in matched if length == longest]
         identities = {
             (
                 _normalize_label(_prop(feature, "name", "lea_name", "area_name")),
@@ -356,7 +389,7 @@ class ReferenceData:
         district_features = _inside_named_area(self.admin_index, lon, lat, levels=_DISTRICT_LEVELS)
 
         if reported_province:
-            if not any(_level(feature) in _PROVINCE_LEVELS for feature in self.admin_index.features):
+            if not self.has_province_features:
                 return None
             observed = True
             expected = {_normalize_label(_prop(feature, "name", "province", "province_name")) for feature in province_features}
@@ -364,7 +397,7 @@ class ReferenceData:
                 return False
 
         if reported_district:
-            if not any(_level(feature) in _DISTRICT_LEVELS for feature in self.admin_index.features):
+            if not self.has_district_features:
                 return None
             observed = True
             expected = {_normalize_label(_prop(feature, "name", "district", "district_name")) for feature in district_features}
