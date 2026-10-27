@@ -14,7 +14,7 @@ The current upload profile is the nine-field provider CSV contract below. The ac
 | `dp_latitude` / `dp_longitude` | Yes | Check coordinate validity, repeated-DP consistency and distance to customer |
 | `line_distance_m` | Yes | Validate that the value is finite, numeric and non-negative; no cable-length maximum is assumed without provider approval |
 
-The importer normalizes header capitalization, punctuation and spacing. It recognizes `cust_address` as `address`, and common aliases for coordinates and router/service number. A legacy `phone_number` column can substitute for `router_number` if it is the source's actual field. This does not make the router identifier a phone number.
+The importer normalizes header capitalization, punctuation and spacing. It recognizes `cust_address` as `address`, and common aliases for coordinates and telephone number. A legacy `phone_number` column can substitute for `router_number` if it is the source's actual fixed-line telephone field.
 
 ## Calculated outputs
 
