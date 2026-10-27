@@ -157,6 +157,13 @@ class MongoIntegrationTests(unittest.TestCase):
                     "run_id": run_id,
                     "customer_id": {"$in": ["SYN-C-1", "SYN-C-2"]},
                 }), 2)
+                self.assertEqual(
+                    self.customers.count_documents({
+                        "run_id": run_id,
+                        "search_terms_normalized": {"$regex": "^sync1"},
+                    }),
+                    1,
+                )
                 self.assertEqual(self.dps.count_documents({"run_id": run_id}), 1)
                 dp = self.dps.find_one({"run_id": run_id})
                 self.assertEqual(dp["dp_id"], "SYN-DP-1")
