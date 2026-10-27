@@ -326,6 +326,9 @@ def validate_row(
         "customer_id": customer_id or None,
         "router_number": router_number or None,
         "calculated_customer_dp_distance_m": round(direct_distance, 1) if direct_distance is not None else None,
+        # The existing project data contract defines overhead_distance_m as the
+        # direct customer-to-DP distance, not a road route or measured cable length.
+        "overhead_distance_m": round(direct_distance, 1) if direct_distance is not None else None,
         "google_route_distance_m": checks.get("google_route_distance", {}).get("distance_m"),
         "distance_500m_m": checks.get("customer_dp_distance", {}).get("distance_m"),
         "distance_500m_status": checks.get("customer_dp_distance", {}).get("status", UNVERIFIED),
