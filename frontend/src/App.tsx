@@ -1,4 +1,5 @@
 import { type FormEvent, useCallback, useEffect, useMemo, useState } from "react";
+import MapView, { type MapMarker } from "./MapView";
 import {
   Activity, AlertTriangle, ArrowDownToLine, Check, CheckCircle2, ChevronLeft,
   ChevronRight, CircleHelp, Clock3, Database, FileCheck2, FileSpreadsheet,
@@ -8,7 +9,7 @@ import {
 
 type HealthState = "checking" | "connected" | "unavailable";
 type RunStatus = "QUEUED" | "PROCESSING" | "COMPLETED" | "FAILED";
-type Tab = "overview" | "upload" | "results" | "hierarchy" | "issues";
+type Tab = "overview" | "upload" | "results" | "map" | "hierarchy" | "issues";
 type ValidationRun = {
   run_id: string;
   status: RunStatus;
@@ -45,6 +46,8 @@ type RunSummary = {
   issue_counts: Record<string, number>;
   note: string;
 };
+type ReferenceFileStatus = { configured: boolean; feature_or_mapping_count: number; sha256: string | null; status: "LOADED" | "MISSING" };
+type ReferenceStatus = { directory_configured: boolean; country_boundary: ReferenceFileStatus; administrative_areas: ReferenceFileStatus; lea_areas: ReferenceFileStatus; provider_regions: ReferenceFileStatus; warning: string };
 type CustomerResult = {
   row_number: number;
   customer_id?: string | null;
@@ -82,6 +85,7 @@ const tabs: Array<{ id: Tab; label: string; icon: typeof Activity }> = [
   { id: "overview", label: "Overview", icon: Activity },
   { id: "upload", label: "Upload & runs", icon: FileSpreadsheet },
   { id: "results", label: "Customer & DP results", icon: Database },
+  { id: "map", label: "Map explorer", icon: MapPinned },
   { id: "hierarchy", label: "Geographic hierarchy", icon: Map },
   { id: "issues", label: "Issue explorer", icon: AlertTriangle },
 ];
@@ -133,6 +137,8 @@ export default function App() {
   const [selectedRunId, setSelectedRunId] = useState("");
   const [run, setRun] = useState<ValidationRun | null>(null);
   const [summary, setSummary] = useState<RunSummary | null>(null);
+  const [referenceStatus, setReferenceStatus] = useState<ReferenceStatus | null>(null);
+  const [loadingReferences, setLoadingReferences] = useState(false);
   const [file, setFile] = useState<File | null>(null);
   const [uploading, setUploading] = useState(false);
   const [loadingRuns, setLoadingRuns] = useState(false);
@@ -219,9 +225,7 @@ export default function App() {
     if (!apiKey.trim() || !selectedRunId) return;
     setLoadingHierarchy(true);
     try {
-      const response = await apiFetch(
-        `/api/validation-runs/${encodeURIComponent(selectedRunId)}/hierarchy?limit=100&skip=${skip}`,
-      );
+      const response = await apiFetch("/api/validation-runs/" + encodeURIComponent(selectedRunId) + "/hierarchy?limit=100&skip=" + skip);
       setHierarchy(await readJson<Page<HierarchyItem>>(response));
       setHierarchySkip(skip);
       setError("");
@@ -231,6 +235,19 @@ export default function App() {
       setLoadingHierarchy(false);
     }
   }, [apiFetch, apiKey, hierarchySkip, selectedRunId]);
+
+  const loadReferenceStatus = useCallback(async () => {
+    if (!apiKey.trim()) return;
+    setLoadingReferences(true);
+    try {
+      const response = await apiFetch("/api/reference-data/status");
+      setReferenceStatus(await readJson<ReferenceStatus>(response));
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : "Could not load reference-data inventory.");
+    } finally {
+      setLoadingReferences(false);
+    }
+  }, [apiFetch, apiKey]);
 
   useEffect(() => {
     let alive = true;
@@ -254,13 +271,21 @@ export default function App() {
   }, [selectedRunId, apiKey, loadRun]);
 
   useEffect(() => {
+    if (!apiKey.trim()) {
+      setReferenceStatus(null);
+      return;
+    }
+    void loadReferenceStatus();
+  }, [apiKey, loadReferenceStatus]);
+
+  useEffect(() => {
     if (!run || (run.status !== "QUEUED" && run.status !== "PROCESSING") || !apiKey.trim()) return;
     const timer = window.setInterval(() => { void loadRun(run.run_id); }, 2500);
     return () => window.clearInterval(timer);
   }, [apiKey, loadRun, run]);
 
   useEffect(() => {
-    if (tab === "results" && selectedRunId && run?.status === "COMPLETED") void loadResults(resultKind, resultSkip);
+    if ((tab === "results" || tab === "map") && selectedRunId && run?.status === "COMPLETED") void loadResults(resultKind, resultSkip);
   }, [tab, selectedRunId, run?.status]); // Search and paging run only on explicit user actions.
 
   useEffect(() => {
