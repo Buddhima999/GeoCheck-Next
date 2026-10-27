@@ -49,13 +49,8 @@ def detect_mapping(headers: list[str]) -> dict[str, str]:
     used: set[str] = set()
     normalized_headers = {h: normalize_header(h) for h in headers}
     for logical, aliases in FIELD_ALIASES.items():
-        candidates = set(aliases)
+        candidates = {normalize_header(alias) for alias in aliases}
         match = next((h for h in headers if h not in used and normalized_headers[h] in candidates), None)
-        if match is None:
-            match = next(
-                (h for h in headers if h not in used and any(a in normalized_headers[h] for a in aliases if len(a) >= 5)),
-                None,
-            )
         if match is not None:
             result[logical] = match
             used.add(match)
@@ -86,6 +81,7 @@ def iter_mapped_rows(
     max_rows: int | None = None,
     max_columns: int = 64,
     max_cell_chars: int = 4096,
+    include_blank_rows: bool = False,
 ) -> Iterator[dict[str, object]]:
     """Yield mapped source rows one at a time; never reads all rows into RAM."""
     reader = csv.DictReader(stream, strict=True)
@@ -102,13 +98,21 @@ def iter_mapped_rows(
         values = {str(k): (v or "").strip() for k, v in raw.items() if k is not None}
         if any(len(v) > max_cell_chars for v in values.values()):
             raise ValueError(f"CSV row {source_row_number} contains a cell over {max_cell_chars} characters")
-        if not any(values.values()):
-            continue
         mapped = {logical: values.get(header, "") for logical, header in mapping.items()}
+        if not any(values.values()):
+            if include_blank_rows:
+                yield {
+                    "row_number": source_row_number,
+                    "raw": values,
+                    "mapped": mapped,
+                    "is_blank": True,
+                }
+            continue
         yield {
             "row_number": source_row_number,
             "raw": values,
             "mapped": mapped,
+            "is_blank": False,
         }
 
 

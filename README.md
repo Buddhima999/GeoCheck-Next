@@ -7,7 +7,7 @@ Scalable customer and distribution-point (DP/FDP) location data-quality applicat
 - Frontend: React + TypeScript + Vite
 - API: Python + FastAPI
 - Database: MongoDB
-- Processing: chunked, resumable background validation (design target; not implemented yet)
+- Processing: bounded-batch validation service implemented; upload/queue/restart recovery are not implemented yet
 - Core collections: `validation_runs`, `customer_records`, `dp_records`
 - Reference data: versioned local GIS/LEA/provider-region files
 
@@ -56,6 +56,10 @@ python -m unittest discover -s backend/tests -p "test_*.py" -v
 
 The same test command runs automatically in GitHub Actions for pushes to main and feature branches and for pull requests targeting main.
 
+### Bounded-batch processing service
+
+The backend now includes `app.validation.batch_processor.process_csv_file(...)`. It reads rows as a stream, validates them in bounded batches, writes customer outcomes to `customer_records`, rolls up DP consistency/counts into `dp_records`, and updates run progress in `validation_runs`. It expects the caller to create the run record and supply a CSV file path plus the detected column mapping. Upload endpoints, durable queueing, and restart/resume handling are not yet implemented.
+
 ### Generate synthetic test data
 
 From the repository root, generate a small 50-row fixture:
@@ -77,7 +81,7 @@ Generated files are written to `test-data/generated/` and ignored by Git because
 - Sanitized sample of the actual CSV with real headers (remove names, phone numbers and precise customer coordinates; preserve data types and issue patterns).
 - Provider's official operational-region mapping.
 - Approved telephone-area/LEA reference table.
-- Meaning/units of line and overhead distance columns.
+- Approved tolerance for `overhead_distance_m` comparison (its meaning is confirmed as straight-line customer-to-DP distance; the current 25 m tolerance is provisional).
 - Agreed DP association thresholds and duplicate-ID policy.
 
 See `docs/PHASE_0_DATA_CONTRACT.md`, `docs/VALIDATION_RULES.md` and `backend/tests/README.md`.

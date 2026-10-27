@@ -22,7 +22,7 @@ Missing results must never default to PASS.
 | `PHONE_AREA_MISMATCH` | Customer | Geographic phone area conflicts with location-derived area | Apply approved LEA table; normally a review finding |
 | `ADDRESS_ZONE_MISMATCH` | Customer | Coordinates outside reliably resolved locality zone | Unverified if locality ambiguous or zone unavailable |
 | `CUSTOMER_DP_DISTANCE` | Customer-DP relationship | Straight-line distance exceeds threshold | Association anomaly; use only eligible customer evidence for DP scoring |
-| `OVERHEAD_DISTANCE_MISMATCH` | Distance field | Reported overhead distance differs beyond approved tolerance | Units/tolerance require confirmation |
+| `OVERHEAD_DISTANCE_MISMATCH` | Distance field | Reported straight-line customer-to-DP distance differs beyond approved tolerance from coordinates | Enabled by default; provider confirmed the semantics. The 25 m tolerance remains provisional pending approval |
 | `LINE_DISTANCE_INVALID` | Distance field | Non-numeric, negative or invalid value | Invalid line distance must never pass merely because it is below threshold |
 | `DP_COORD_CONFLICT` | DP | Same normalized DP ID has materially different coordinate observations | Report groups/rows; never choose a winner automatically |
 | `CUSTOMER_ID_CONFLICT` | Source row/customer | Same normalized customer ID has incompatible source records | Preserve each row |
@@ -32,8 +32,8 @@ Missing results must never default to PASS.
 Haversine estimates straight-line separation in metres; it does not calculate actual cable routing.
 
 - Customer-to-DP distance: initial proposal is 500 m; confirm with the provider.
-- Reported overhead distance: compare with calculated straight-line distance using a separate approved tolerance.
-- Cable/line distance: validate its value and apply provider-defined cable rules. Do not require cable length to equal straight-line distance.
+- Reported overhead distance: the provider confirmed it is straight-line customer-to-DP distance. Compare it to the Haversine-derived distance using `overhead_distance_tolerance_m` (currently a provisional 25 m tolerance that still needs operational approval).
+- `line_distance_m` is confirmed to use metres. Validate that values are finite and non-negative; no maximum threshold is applied until the provider approves one. Do not require cable length to equal straight-line distance.
 
 ## Geographic tolerance
 
