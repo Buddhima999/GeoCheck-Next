@@ -1,49 +1,53 @@
-# Phase 0 — Data Contract
+# Phase 0 — Customer Audit Data Contract
 
-The synthetic sample's 13 headers are now confirmed as the initial logical CSV contract. They match the current automatic header mapper. The actual production export still needs a sanitized-header check before a real import.
+The current upload profile is the nine-field provider CSV contract below. The actual provider export must still be checked against this logical schema before production use.
 
-## Expected logical fields
+## Required CSV fields
 
-| Field | Required for | Notes |
-|---|---|---|
-| Customer ID | Reliable entity-level reporting | Preserve original value; duplicates/conflicts must remain reviewable |
-| Phone | Area validation | Optional; normalize carefully |
-| Address | Address-zone validation | Optional; ambiguous localities must be unverified |
-| Customer latitude/longitude | Customer spatial validation | Required for coordinate checks |
-| DP ID | DP association checks | Normalize for grouping without losing original value |
-| DP latitude/longitude | Distance checks | May come from source rows or an authoritative DP master |
-| `line_distance_m` | Line-distance rules | Optional; user confirmed the unit is metres. No maximum threshold is configured until the provider approves one. |
-| `overhead_distance_m` | Measurement validation | Optional; the column name suffix suggests metres but its business meaning is not confirmed. Do not compare with straight-line distance until confirmed. |
+| Source header / logical field | Required | Validation purpose |
+|---|---:|---|
+| `customer_id` | Yes | Preserve source value; detect conflicting records for the same normalized ID |
+| `router_number` | Yes | Preserve and check presence of the router/service identifier; treated as opaque unless the provider specifies its meaning |
+| `customer_latitude` / `customer_longitude` | Yes | Validate numeric geographic coordinates, placeholders, possible swaps and country-boundary membership |
+| `cust_address` (logical `address`) | Yes | Compare the geocoded/reference location with the uploaded customer coordinate where a trusted lookup is available |
+| `dp_id` | Yes | Preserve original value and normalize only for grouping |
+| `dp_latitude` / `dp_longitude` | Yes | Check coordinate validity, repeated-DP consistency and distance to customer |
+| `line_distance_m` | Yes | Validate that the value is finite, numeric and non-negative; no cable-length maximum is assumed without provider approval |
 
-## Data concepts
+The importer normalizes header capitalization, punctuation and spacing. It recognizes `cust_address` as `address`, and common aliases for coordinates and router/service number. A legacy `phone_number` column can substitute for `router_number` if it is the source's actual field. This does not make the router identifier a phone number.
 
-- **Source row:** one CSV row. Preserve source row number and mapped/original values for reconciliation.
-- **Customer entity:** a logical customer represented by its identifier, where reliable.
-- **DP entity:** a logical DP represented by its normalized DP ID.
-- **Observed DP coordinates:** DP coordinates recorded on one source row. These may conflict across rows.
-- **Resolved geography:** administrative zone derived from trusted polygons; provider region assigned only from authoritative company data.
-- **Finding:** one rule outcome for one relevant row or entity.
+## Calculated outputs
 
-## Three core MongoDB collections
+- `overhead_distance_m`: calculated from customer and DP coordinates using the Haversine formula. The existing project data contract defines this as direct geographic distance, not the measured cable path or a Google road route.
+- `overhead_distance_500m_status`: whether that calculated direct distance is at most the configured `CUSTOMER_DP_LIMIT_M` (default 500 m).
+- `google_route_distance_m`: only returned when optional Google Routes API mode is enabled and Google returns a valid driving route. This is a road-route distance, not overhead cable distance.
+- `distance_500m_status`: result for the configured distance rule. In the default `straight_line` mode it matches the direct-coordinate threshold; with optional `google_routes` mode it is the route-distance threshold. The direct overhead threshold is reported separately in both modes.
+- `customer_inside_sri_lanka`: `PASS`, `FAIL`, or `UNVERIFIED` based on the configured country polygon and valid customer coordinates.
+- `address_match_status`: outcome of Google Geocoding (if enabled) or an approved locality-zone reference. It remains unverified when no suitable source is available.
+- `overall_status`, `issue_codes`, and `findings`: row-level fault summary and traceable rule explanations.
 
-- `validation_runs`: file metadata/hash, mapping, thresholds, rule/reference versions, progress and summary.
-- `customer_records`: one record per source row per run, original values, normalized fields, geography, bounded check results and issue codes.
-- `dp_records`: one distinct DP per run, coordinate consistency summary, location result and customer-association aggregates.
+## Status semantics
 
-Do not store all customers inside a DP document as an array. Keep customer records individually queryable via run and DP ID indexes.
+- `PASS`: evidence satisfies the configured check.
+- `FAIL`: evidence confirms a rule violation.
+- `UNVERIFIED`: the necessary reference, valid coordinates or external response is unavailable or ambiguous.
+- `NOT_APPLICABLE`: the rule does not apply to the row.
 
-## Required run metadata
+Fault exports filter `overall_status=FAIL`; unverified reports remain separate so lack of evidence is not reported as a confirmed fault. Multiple findings are preserved for a row, while customer totals count each row once.
 
-Every run identifies its source file hash, filename, column mapping, import/validator version, rule version, reference-data versions, thresholds, counts, timestamps and final status.
+## Reference data and Google Maps
 
-## Inputs to confirm
+The bundled country boundary was copied from the user's earlier `Buddhima999/geocheck-vercel` project and has not been independently certified. Its source, license, coastline precision, island coverage and inland-water treatment must be reviewed with the provider. It is sufficient for initial development tests, not authoritative evidence of a legal boundary.
 
-1. A sanitized 20–50-row example using actual CSV headers. Include examples of missing values, duplicate/conflicting IDs, coordinate conflicts and distances if available. Replace personal data and precise coordinates with synthetic equivalents while preserving structure.
-2. Provider's official DP/region mapping.
-3. Approved LEA/telephone-area reference table and the number types to which it applies.
-4. `line_distance_m` is confirmed in metres. The provider has confirmed that `overhead_distance_m` is the straight-line distance between the customer and DP; the comparison uses the configurable tolerance in validation settings.
-5. Duplicate-customer policy and source-of-truth DP coordinates.
-6. DP association threshold, minimum eligible-customer count and required pass rate.
-7. Deployment mode: multiple authenticated users sharing MongoDB-backed runs is the initial design.
+Google Routes / Geocoding are optional, use backend-only API credentials, and have a per-run request limit. Routes and Geocoding APIs must be enabled and billing configured in the relevant Google Cloud project. Google requests can incur costs, and the 500 m overhead threshold is not derived from road-route length. See `docs/CUSTOMER_DP_AUDIT.md`.
 
-Until inputs are approved, ambiguous checks must return UNVERIFIED rather than inventing evidence.
+## Still to confirm with the provider
+
+1. The official source of truth for customer IDs, router numbers and DP IDs.
+2. Whether `router_number` is a hardware serial, a service identifier, or a telephone number.
+3. The required measurement semantics for `line_distance_m`; cable lengths must not be forced to equal Haversine or road-route distance.
+4. Whether Google Maps route distance is needed as an additional check, and an approved request budget for the expected dataset size.
+5. The official administrative area / LEA / provider-region mappings, if geographic number and locality checks are needed.
+6. Duplicate-customer policy, authoritative DP coordinates, minimum eligible DP-customer count and required pass rate.
+
+Until those inputs are approved, ambiguous checks stay `UNVERIFIED` rather than inventing evidence.
