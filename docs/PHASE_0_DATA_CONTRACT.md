@@ -41,7 +41,7 @@ Every run identifies its source file hash, filename, column mapping, import/vali
 1. A sanitized 20–50-row example using actual CSV headers. Include examples of missing values, duplicate/conflicting IDs, coordinate conflicts and distances if available. Replace personal data and precise coordinates with synthetic equivalents while preserving structure.
 2. Provider's official DP/region mapping.
 3. Approved LEA/telephone-area reference table and the number types to which it applies.
-4. `line_distance_m` is confirmed in metres. The meaning of `overhead_distance_m` and whether it represents straight-line or cable-route length still need confirmation.
+4. `line_distance_m` is confirmed in metres. The provider has confirmed that `overhead_distance_m` is the straight-line distance between the customer and DP; the comparison uses the configurable tolerance in validation settings.
 5. Duplicate-customer policy and source-of-truth DP coordinates.
 6. DP association threshold, minimum eligible-customer count and required pass rate.
 7. Deployment mode: multiple authenticated users sharing MongoDB-backed runs is the initial design.
