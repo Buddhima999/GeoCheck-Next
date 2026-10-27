@@ -106,10 +106,28 @@ class RuleTests(unittest.TestCase):
         self.assertIn("LINE_DISTANCE_INVALID", result["issue_codes"])
         self.assertEqual(result["checks"]["line_distance"]["status"], FAIL)
 
-    def test_overhead_mismatch(self):
+    def test_overhead_mismatch_is_enabled_by_default(self):
         row = self.good_row()
         row["overhead_distance_m"] = "999"
-        self.assertIn("OVERHEAD_DISTANCE_MISMATCH", validate_row(row)["issue_codes"])
+        result = validate_row(row)
+        self.assertIn("OVERHEAD_DISTANCE_MISMATCH", result["issue_codes"])
+        self.assertEqual(result["checks"]["overhead_distance"]["status"], FAIL)
+
+    def test_overhead_comparison_can_be_disabled_explicitly(self):
+        from app.validation.rules import ValidationSettings
+
+        row = self.good_row()
+        row["overhead_distance_m"] = "999"
+        result = validate_row(row, settings=ValidationSettings(overhead_distance_is_straight_line=False))
+        self.assertNotIn("OVERHEAD_DISTANCE_MISMATCH", result["issue_codes"])
+        self.assertEqual(result["checks"]["overhead_distance"]["status"], UNVERIFIED)
+
+    def test_line_distance_has_no_unapproved_maximum(self):
+        row = self.good_row()
+        row["line_distance_m"] = "9000"
+        result = validate_row(row)
+        self.assertNotIn("LINE_DISTANCE_LIMIT", result["issue_codes"])
+        self.assertEqual(result["checks"]["line_distance"]["status"], PASS)
 
     def test_cross_row_duplicate_and_dp_coordinate_conflicts(self):
         first = self.good_row()
