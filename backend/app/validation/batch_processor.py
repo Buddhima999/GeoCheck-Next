@@ -125,13 +125,7 @@ def _mark_customer_id_conflicts(
                             "$trim": {"input": {"$ifNull": ["$source_values.address", ""]}}
                         }
                     },
-                    "phone": {
-                        "$regexReplace": {
-                            "input": {"$ifNull": ["$source_values.phone_number", ""]},
-                            "regex": "[^0-9]",
-                            "replacement": "",
-                        }
-                    },
+                    "phone": {"$ifNull": ["$phone_normalized", ""]},
                 },
                 "signature_rows": {"$sum": 1},
             }
@@ -450,6 +444,11 @@ def process_csv_file(
                             "dp_id": result.get("dp_id"),
                             "dp_id_normalized": result.get("dp_id_normalized"),
                             "source_values": result.get("source_values", {}),
+                            "phone_normalized": "".join(
+                                character
+                                for character in str((result.get("source_values", {}) or {}).get("phone_number", "") or "")
+                                if character.isdigit()
+                            ),
                             "search_terms_normalized": _search_terms_normalized(result),
                             "customer_location": result.get("customer_location"),
                             "dp_location_observed": result.get("dp_location_observed"),
