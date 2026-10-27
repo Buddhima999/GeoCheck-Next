@@ -32,7 +32,7 @@ Missing results must never default to PASS.
 Haversine estimates straight-line separation in metres; it does not calculate actual cable routing.
 
 - Customer-to-DP distance: initial proposal is 500 m; confirm with the provider.
-- Reported overhead distance: default to `UNVERIFIED` until the provider confirms that this value is intended to match straight-line distance. If confirmed, compare with a separately approved tolerance.
+- Reported overhead distance: the provider confirmed it is straight-line customer-to-DP distance. Compare it to the Haversine-derived distance using `overhead_distance_tolerance_m` (currently a provisional 25 m tolerance that still needs operational approval).
 - `line_distance_m` is confirmed to use metres. Validate that values are finite and non-negative; no maximum threshold is applied until the provider approves one. Do not require cable length to equal straight-line distance.
 
 ## Geographic tolerance
