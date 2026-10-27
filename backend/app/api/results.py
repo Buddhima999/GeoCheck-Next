@@ -271,7 +271,25 @@ def list_dp_results(
             "issue_codes": 1,
         },
     ).sort("dp_id_normalized", 1).skip(skip).limit(limit)
-    return {"items": list(cursor), "total": total, "limit": limit, "skip": skip}
+    items = []
+    for document in cursor:
+        item = dict(document)
+        eligible_rows = int(item.get("eligible_customer_row_count", 0) or 0)
+        failed_rows = int(item.get("eligible_distance_fail_row_count", 0) or 0)
+        passed_rows = max(eligible_rows - failed_rows, 0)
+        item["eligible_distance_pass_row_count"] = passed_rows
+        item["eligible_distance_fail_percentage"] = (
+            round(failed_rows * 100.0 / eligible_rows, 2) if eligible_rows else None
+        )
+        if eligible_rows == 0:
+            item["association_evidence"] = "INSUFFICIENT_ELIGIBLE_ROWS"
+        elif failed_rows > 0:
+            item["association_evidence"] = "DISTANCE_FAILURES_OBSERVED"
+        else:
+            item["association_evidence"] = "NO_DISTANCE_FAILURES_OBSERVED"
+        item["association_threshold_configured"] = False
+        items.append(item)
+    return {"items": items, "total": total, "limit": limit, "skip": skip}
 
 
 @router.get("/{run_id}/hierarchy", dependencies=[Depends(require_api_key)])
@@ -466,11 +484,31 @@ def export_dp_results(run_id: str, consistency: str | None = Query(default=None,
         "valid_coordinate_observation_count",
         "coordinate_conflict_observation_count",
         "eligible_customer_row_count",
+        "eligible_distance_pass_row_count",
         "eligible_distance_fail_row_count",
+        "eligible_distance_fail_percentage",
+        "association_evidence",
+        "association_threshold_configured",
         "issue_codes",
     ]
+
+    def dp_export_rows() -> Iterator[dict[str, Any]]:
+        for document in cursor:
+            eligible_rows = int(document.get("eligible_customer_row_count", 0) or 0)
+            failed_rows = int(document.get("eligible_distance_fail_row_count", 0) or 0)
+            item = dict(document)
+            item["eligible_distance_pass_row_count"] = max(eligible_rows - failed_rows, 0)
+            item["eligible_distance_fail_percentage"] = round(failed_rows * 100.0 / eligible_rows, 2) if eligible_rows else None
+            item["association_evidence"] = (
+                "INSUFFICIENT_ELIGIBLE_ROWS" if eligible_rows == 0
+                else "DISTANCE_FAILURES_OBSERVED" if failed_rows > 0
+                else "NO_DISTANCE_FAILURES_OBSERVED"
+            )
+            item["association_threshold_configured"] = False
+            yield item
+
     return StreamingResponse(
-        _csv_stream(cursor, fields),
+        _csv_stream(dp_export_rows(), fields),
         media_type="text/csv; charset=utf-8",
         headers={"Content-Disposition": f'attachment; filename="geocheck-{run_id}-dps.csv"'},
     )
