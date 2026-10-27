@@ -4,6 +4,7 @@ from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pymongo.errors import PyMongoError
 
+from .api.reference_data import router as reference_data_router
 from .api.results import router as validation_results_router
 from .api.validation_runs import router as validation_runs_router
 from .config import settings
@@ -42,6 +43,7 @@ app.add_middleware(
 
 app.include_router(validation_runs_router)
 app.include_router(validation_results_router)
+app.include_router(reference_data_router)
 
 
 @app.get("/api/health")
