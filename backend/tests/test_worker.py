@@ -217,7 +217,7 @@ class WorkerTests(unittest.TestCase):
                 customers = FakeCollection([{"run_id": "replay-run", "row_number": 2, "customer_id": "OLD-PARTIAL"}])
                 dps = FakeCollection([{"run_id": "replay-run", "dp_id": "OLD-PARTIAL-DP"}])
 
-                def fake_process(**kwargs):
+                def fake_process(_csv_path, **kwargs):
                     kwargs["validation_runs"].update_one(
                         {"run_id": "replay-run"},
                         {"$set": {"status": "COMPLETED", "rows_processed": 1, "summary": {"rows_processed": 1}}},
