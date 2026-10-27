@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import csv
+import io
 import json
 import secrets
 import uuid
@@ -14,7 +15,7 @@ from pymongo.errors import PyMongoError
 from ..config import settings
 from ..database import validation_runs
 from ..upload_storage import resolve_upload_path, upload_directory
-from ..validation.csv_import import FIELD_ALIASES, detect_mapping, validate_mapping
+from ..validation.csv_import import FIELD_ALIASES, REQUIRED_COORDINATE_FIELDS, detect_mapping, normalize_header, validate_mapping
 
 router = APIRouter(prefix="/api/validation-runs", tags=["validation-runs"])
 _CHUNK_BYTES = 1024 * 1024
@@ -109,6 +110,77 @@ def _public_run(run: dict[str, Any]) -> dict[str, Any]:
         "issue_counts": run.get("issue_counts", {}),
         "summary": run.get("summary"),
     }
+
+
+def _has_complete_header_record(data: bytes) -> bool:
+    """Find a complete first CSV record while respecting quoted commas/newlines."""
+    quoted = False
+    index = 0
+    while index < len(data):
+        byte = data[index]
+        if byte == 34:  # double quote
+            if quoted and index + 1 < len(data) and data[index + 1] == 34:
+                index += 2
+                continue
+            quoted = not quoted
+        elif byte == 10 and not quoted:  # newline outside a quoted header cell
+            return True
+        index += 1
+    return False
+
+
+@router.post("/preview", dependencies=[Depends(require_api_key)])
+async def preview_validation_csv(file: UploadFile = File(...)) -> dict[str, Any]:
+    """Preview only the header record; never load a full large file into API memory."""
+    if not (file.filename or "").lower().endswith(".csv"):
+        raise HTTPException(status_code=status.HTTP_415_UNSUPPORTED_MEDIA_TYPE, detail="Upload a .csv file.")
+
+    maximum_header_bytes = 512 * 1024
+    buffer = bytearray()
+    try:
+        while len(buffer) <= maximum_header_bytes:
+            chunk = await file.read(min(16 * 1024, maximum_header_bytes + 1 - len(buffer)))
+            if not chunk:
+                break
+            buffer.extend(chunk)
+            if _has_complete_header_record(buffer):
+                break
+        if len(buffer) > maximum_header_bytes:
+            raise HTTPException(
+                status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
+                detail="CSV header exceeds the 512 KiB preview limit.",
+            )
+        if not buffer:
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="The uploaded CSV is empty.")
+
+        text = bytes(buffer).decode("utf-8-sig")
+        try:
+            reader = csv.reader(io.StringIO(text, newline=""), strict=True)
+            headers = next(reader, None)
+        except csv.Error as exc:
+            raise ValueError(f"Could not parse the CSV header: {exc}") from exc
+        if not headers or not any(header.strip() for header in headers):
+            raise ValueError("CSV has no header row.")
+        if len(headers) > 64:
+            raise ValueError(f"CSV has {len(headers)} columns; maximum is 64.")
+        if any(not header.strip() for header in headers):
+            raise ValueError("CSV contains an empty column header.")
+        if len({normalize_header(header) for header in headers}) != len(headers):
+            raise ValueError("CSV contains duplicate column headers after normalization.")
+        detected = detect_mapping(headers)
+        return {
+            "headers": headers,
+            "detected_mapping": detected,
+            "supported_fields": list(FIELD_ALIASES),
+            "required_fields": list(REQUIRED_COORDINATE_FIELDS),
+            "file_name": _display_filename(file.filename),
+        }
+    except HTTPException:
+        raise
+    except (ValueError, csv.Error, UnicodeDecodeError) as exc:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
+    finally:
+        await file.close()
 
 
 @router.post("", status_code=status.HTTP_202_ACCEPTED, dependencies=[Depends(require_api_key)])
