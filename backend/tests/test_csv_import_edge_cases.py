@@ -89,10 +89,10 @@ class CSVImportEdgeCaseTests(unittest.TestCase):
 
     def test_can_include_blank_rows_for_accurate_source_row_counts(self):
         source = io.StringIO(
-            ",".join(HEADERS) + "\\n"
-            "C-1,6.9,79.8,6.91,79.81\\n"
-            ",,,,\\n"
-            "C-2,6.8,79.7,6.81,79.71\\n"
+            ",".join(HEADERS) + "\n"
+            "C-1,6.9,79.8,6.91,79.81\n"
+            ",,,,\n"
+            "C-2,6.8,79.7,6.81,79.71\n"
         )
         rows = list(iter_mapped_rows(source, mapping(), include_blank_rows=True))
         self.assertEqual([row["row_number"] for row in rows], [2, 3, 4])
