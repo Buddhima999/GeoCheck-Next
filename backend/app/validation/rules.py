@@ -403,10 +403,9 @@ def validate_row(
                 contradictory_evidence.append(
                     f"address text mentions {', '.join(mentioned_areas)}, not {area_name}"
                 )
-        elif len(address_codes) > 1:
-            # Road names and locality names can overlap (for example, "Kandy
-            # Road, Colombo"). Ambiguous address text must not confirm an area.
-            pass
+        # Zero place names means no locality evidence. Multiple place names can
+        # occur in road names (e.g. "Kandy Road, Colombo"), so ambiguous address
+        # text is deliberately not used to confirm or contradict the area.
         if reported_district:
             if reported_district == area_district:
                 matching_evidence.append(f"reported district matches {area_district}")
