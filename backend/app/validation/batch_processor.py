@@ -233,12 +233,17 @@ def process_csv_file(
 
     counters: Counter[str] = Counter()
     rows_processed = 0
+    source_rows_seen = 0
+    blank_rows_skipped = 0
     batches_processed = 0
 
     try:
         with Path(csv_path).open("r", newline="", encoding="utf-8-sig") as stream:
-            mapped_rows = iter_mapped_rows(stream, mapping)
+            mapped_rows = iter_mapped_rows(stream, mapping, include_blank_rows=True)
             for batch in _chunks(mapped_rows, batch_size):
+                source_rows_seen += len(batch)
+                blank_rows_skipped += sum(bool(row.get("is_blank")) for row in batch)
+                nonblank_batch = [row for row in batch if not row.get("is_blank")]
                 results = [
                     validate_row(
                         row,
@@ -248,7 +253,7 @@ def process_csv_file(
                         address_zone_check=address_zone_check,
                         geography_check=geography_check,
                     )
-                    for row in batch
+                    for row in nonblank_batch
                 ]
                 dp_groups = _group_dp_observations(results)
                 if dp_groups:
@@ -312,6 +317,8 @@ def process_csv_file(
                 progress_update: dict[str, Any] = {
                     "$inc": {
                         "rows_processed": len(documents),
+                        "source_rows_seen": len(batch),
+                        "blank_rows_skipped": sum(bool(row.get("is_blank")) for row in batch),
                         "batches_processed": 1,
                         "rows_with_findings": sum(bool(item.get("issue_codes")) for item in documents),
                         "rows_with_hard_errors": sum(bool(item.get("has_hard_error")) for item in documents),
@@ -328,6 +335,8 @@ def process_csv_file(
         completed = utc_now()
         summary = {
             "rows_processed": rows_processed,
+            "source_rows_seen": source_rows_seen,
+            "blank_rows_skipped": blank_rows_skipped,
             "batches_processed": batches_processed,
             "rows_with_findings": int(counters["rows_with_findings"]),
             "rows_with_hard_errors": int(counters["rows_with_hard_errors"]),
@@ -353,6 +362,8 @@ def process_csv_file(
                     "failed_at": utc_now(),
                     "last_error": f"{type(exc).__name__}: {str(exc)[:500]}",
                     "partial_rows_processed": rows_processed,
+                    "partial_source_rows_seen": source_rows_seen,
+                    "partial_blank_rows_skipped": blank_rows_skipped,
                     "partial_batches_processed": batches_processed,
                 }
             },
