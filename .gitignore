@@ -1,0 +1,19 @@
+# Secrets and local environment
+.env
+.env.*
+!.env.example
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+.pytest_cache/
+
+# JavaScript
+node_modules/
+frontend/dist/
+
+# Generated synthetic data can be large; keep it out of Git.
+test-data/generated/
+*.csv.gz
