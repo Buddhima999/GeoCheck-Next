@@ -553,11 +553,41 @@ export default function App() {
       </>}
 
       {tab === "upload" && <section className="upload-layout">
-        <article className="panel"><div className="panel-heading"><div><h2>Upload customer data CSV</h2><p>The server checks the header and queues the file for the worker.</p></div><span className="icon-bubble"><Upload size={18} /></span></div>
+        <article className="panel"><div className="panel-heading"><div><h2>Upload customer data CSV</h2><p>Preview and map the CSV columns before sending the file to the worker.</p></div><span className="icon-bubble"><Upload size={18} /></span></div>
           <form onSubmit={submitUpload} className="upload-form">
-            <label className="file-drop"><input type="file" accept=".csv,text/csv" onChange={(event) => setFile(event.target.files?.[0] || null)} /><span className="file-drop-icon"><Upload size={23} /></span><strong>{file?.name || "Choose a CSV file"}</strong><small>{file ? `${(file.size / (1024 * 1024)).toFixed(2)} MiB selected` : "Click to browse. Max upload size: 512 MiB by default."}</small></label>
-            <div className="notice-note"><CircleHelp size={16} /><span>CSV must contain customer and DP latitude/longitude columns. The API detects known header aliases or accepts a custom mapping through its API. Blank data rows are counted separately.</span></div>
-            <button type="submit" className="primary-button" disabled={!file || !apiKey.trim() || uploading}>{uploading ? <><LoaderCircle size={16} className="spinning" /> Uploading…</> : <><Upload size={16} /> Upload and queue validation</>}</button>
+            <label className="file-drop"><input type="file" accept=".csv,text/csv" onChange={(event) => { setCsvPreview(null); setColumnMapping({}); setFile(event.target.files?.[0] || null); }} /><span className="file-drop-icon"><Upload size={23} /></span><strong>{file?.name || "Choose a CSV file"}</strong><small>{file ? `${(file.size / (1024 * 1024)).toFixed(2)} MiB selected` : "Click to browse. Max upload size: 512 MiB by default."}</small></label>
+            {previewing && <div className="loading-state compact"><LoaderCircle size={16} className="spinning" /> Reading CSV column names…</div>}
+            {file && csvPreview && <div className="mapping-editor">
+              <div className="mapping-heading"><div><strong>Confirm column mapping</strong><span>Detected matches are pre-selected. All four coordinate fields are required.</span></div><span className="status-badge completed"><CheckCircle2 size={12} /> Preview ready</span></div>
+              <div className="mapping-grid">
+                {csvPreview.supported_fields.map((field) => {
+                  const required = csvPreview.required_fields.includes(field);
+                  return <label key={field} className="field-label mapping-field">
+                    <span>{field.replaceAll("_", " ")}{required && <b className="required-label">Required</b>}</span>
+                    <select value={columnMapping[field] || ""} required={required} onChange={(event) => {
+                      const selected = event.target.value;
+                      setColumnMapping((previous) => {
+                        const next = { ...previous };
+                        if (!selected) delete next[field];
+                        else {
+                          for (const [otherField, header] of Object.entries(next)) {
+                            if (otherField !== field && header === selected) delete next[otherField];
+                          }
+                          next[field] = selected;
+                        }
+                        return next;
+                      });
+                    }}>
+                      <option value="">Not mapped</option>
+                      {csvPreview.headers.map((header) => <option key={header} value={header}>{header}</option>)}
+                    </select>
+                  </label>;
+                })}
+              </div>
+              <div className="mapping-footnote"><CircleHelp size={14} /> {Object.keys(columnMapping).length} field(s) mapped. A source column can map to only one logical field. Do not map columns that the CSV does not contain.</div>
+            </div>}
+            <div className="notice-note"><CircleHelp size={16} /><span>The header preview reads only the first CSV record. Confirm the column mapping, then the worker checks the full file syntax, field lengths and row-count limit before writing results.</span></div>
+            <button type="submit" className="primary-button" disabled={!file || !apiKey.trim() || uploading || previewing || !csvPreview}>{uploading ? <><LoaderCircle size={16} className="spinning" /> Uploading…</> : <><Upload size={16} /> Upload and queue validation</>}</button>
           </form>
         </article>
         <article className="panel"><div className="panel-heading"><div><h2>Selected run</h2><p>Status updates automatically while the run is active.</p></div><button className="icon-button" title="Refresh selected run" onClick={() => run && void loadRun(run.run_id)} disabled={!run || !apiKey}><RefreshCw size={16} /></button></div>
@@ -568,7 +598,7 @@ export default function App() {
             <div className="progress-labels"><span>{run.stage || run.status}</span><span>{formatNumber(run.rows_processed)} processed</span></div>
             <dl className="detail-grid"><dt>Created</dt><dd>{formatDate(run.created_at)}</dd><dt>Rows seen</dt><dd>{formatNumber(run.source_rows_seen)}</dd><dt>Blank rows</dt><dd>{formatNumber(run.blank_rows_skipped)}</dd><dt>Rows with findings</dt><dd>{formatNumber(run.rows_with_findings)}</dd><dt>Hard errors</dt><dd>{formatNumber(run.rows_with_hard_errors)}</dd></dl>
             {run.status === "COMPLETED" && <button className="primary-button full-width" onClick={() => { setTab("results"); setResultKind("customers"); void loadResults("customers", 0); }}>Explore results <ChevronRight size={16} /></button>}
-            {run.status === "FAILED" && <p className="failure-note">This run failed. Automatic resume is not supported yet. Review the run status/API logs and submit the source CSV as a new run.</p>}
+            {run.status === "FAILED" && <p className="failure-note">This run failed after its configured retry attempts. Check the API/worker logs and source file before submitting a new run.</p>}
           </div> : <div className="empty-state"><div className="empty-icon"><Clock3 size={24} /></div><strong>No run selected</strong><span>Upload a CSV or select a recent run from the overview.</span></div>}
         </article>
         <article className="panel runs-table-panel"><div className="panel-heading"><div><h2>Validation run history</h2><p>{formatNumber(runTotal)} run(s) found.</p></div><button className="secondary-button" onClick={() => void loadRuns()} disabled={!apiKey || loadingRuns}><RefreshCw size={14} className={loadingRuns ? "spinning" : ""} /> Refresh</button></div>
