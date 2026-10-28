@@ -24,6 +24,7 @@ class Settings(BaseSettings):
     # which is not the same measurement as actual overhead cable length.
     distance_method: str = "straight_line"
     customer_dp_limit_m: float = 500.0
+    dp_port_capacity: int = Field(default=8, ge=1)
     max_line_distance_m: float | None = None
     google_maps_server_key: str | None = None
     google_geocoding_enabled: bool = False

@@ -148,7 +148,10 @@ class ValidationResultsApiTests(unittest.TestCase):
                 "coordinate_consistency": "CONFLICT", "observed_row_count": 2,
                 "valid_coordinate_observation_count": 2, "coordinate_conflict_observation_count": 1,
                 "eligible_customer_row_count": 1, "eligible_distance_assessed_row_count": 1, "eligible_distance_pass_row_count": 0, "eligible_distance_fail_row_count": 1,
-                "issue_codes": ["DP_COORD_CONFLICT"],
+                "port_capacity": 8, "assigned_customer_count": 9,
+                "available_port_count": 0, "port_capacity_status": "FAIL",
+                "port_capacity_exceeded_by": 1,
+                "issue_codes": ["DP_COORD_CONFLICT", "DP_PORT_CAPACITY_EXCEEDED"],
             }
         ])
         self.patches = [
@@ -212,6 +215,8 @@ class ValidationResultsApiTests(unittest.TestCase):
         self.assertEqual(body["passed_customers"], 0)
         self.assertEqual(body["eligible_for_dp_assessment"], 1)
         self.assertEqual(body["dp_coordinate_conflict"], 1)
+        self.assertEqual(body["dp_port_capacity_exceeded"], 1)
+        self.assertEqual(body["dp_port_capacity_limit"], 8)
 
     def test_customer_export_streams_rows_and_spreadsheet_safe_values(self):
         self.customers.documents[0]["customer_id"] = "=HYPERLINK(1)"
@@ -253,6 +258,28 @@ class ValidationResultsApiTests(unittest.TestCase):
     def test_unknown_run_is_404(self):
         response = self.client.get("/api/validation-runs/missing/summary", headers=self.headers)
         self.assertEqual(response.status_code, 404)
+
+
+    def test_dp_results_and_export_include_port_capacity_fields(self):
+        response = self.client.get(
+            "/api/validation-runs/run-1/dps",
+            headers=self.headers,
+        )
+        self.assertEqual(response.status_code, 200, response.text)
+        item = response.json()["items"][0]
+        self.assertEqual(item["port_capacity"], 8)
+        self.assertEqual(item["assigned_customer_count"], 9)
+        self.assertEqual(item["available_port_count"], 0)
+        self.assertEqual(item["port_capacity_status"], "FAIL")
+
+        export = self.client.get(
+            "/api/validation-runs/run-1/dps/export.csv",
+            headers=self.headers,
+        )
+        self.assertEqual(export.status_code, 200, export.text)
+        self.assertIn("assigned_customer_count", export.text)
+        self.assertIn(",9,", export.text)
+        self.assertIn("DP_PORT_CAPACITY_EXCEEDED", export.text)
 
 
 if __name__ == "__main__":

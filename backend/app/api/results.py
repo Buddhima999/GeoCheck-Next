@@ -170,6 +170,7 @@ def get_run_summary(run_id: str) -> dict[str, Any]:
     dp_consistent = dps.count_documents({"run_id": run_id, "coordinate_consistency": "CONSISTENT"})
     dp_conflict = dps.count_documents({"run_id": run_id, "coordinate_consistency": "CONFLICT"})
     dp_unverified = dps.count_documents({"run_id": run_id, "coordinate_consistency": "UNVERIFIED"})
+    dp_port_capacity_exceeded = dps.count_documents({"run_id": run_id, "port_capacity_status": "FAIL"})
 
     summary = run.get("summary") or {}
     return {
@@ -190,6 +191,8 @@ def get_run_summary(run_id: str) -> dict[str, Any]:
         "dp_coordinate_consistent": dp_consistent,
         "dp_coordinate_conflict": dp_conflict,
         "dp_coordinate_unverified": dp_unverified,
+        "dp_port_capacity_exceeded": dp_port_capacity_exceeded,
+        "dp_port_capacity_limit": int(summary.get("dp_port_capacity", 8) or 8),
         "issue_counts": run.get("issue_counts", {}),
         "processor_summary": summary,
         "note": "Reference-dependent checks remain UNVERIFIED until approved reference datasets are configured.",
@@ -238,6 +241,8 @@ def list_customer_results(
             "customer_inside_sri_lanka": 1,
             "overall_status": 1,
             "has_fault": 1,
+            "dp_port_capacity_status": 1,
+            "dp_port_capacity": 1,
             "customer_location": 1,
             "dp_location_observed": 1,
             "checks": 1,
@@ -289,6 +294,11 @@ def list_dp_results(
             "coordinate_conflict_observation_count": 1,
             "eligible_customer_row_count": 1,
             "eligible_distance_fail_row_count": 1,
+            "port_capacity": 1,
+            "assigned_customer_count": 1,
+            "available_port_count": 1,
+            "port_capacity_status": 1,
+            "port_capacity_exceeded_by": 1,
             "issue_codes": 1,
         },
     ).sort("dp_id_normalized", 1).skip(skip).limit(limit)
@@ -445,6 +455,8 @@ def export_customer_results(
             "distance_method": 1,
             "customer_inside_sri_lanka": 1,
             "overall_status": 1,
+            "dp_port_capacity_status": 1,
+            "dp_port_capacity": 1,
             "checks": 1,
             "customer_location": 1,
             "dp_location_observed": 1,
@@ -481,6 +493,8 @@ def export_customer_results(
         "phone_area_status",
         "phone_area_message",
         "overall_status",
+        "dp_port_capacity_status",
+        "dp_port_capacity",
         "source_row_values",
         "issue_codes",
         "findings",
@@ -518,6 +532,8 @@ def export_customer_results(
                 "phone_area_status": (doc.get("checks") or {}).get("phone_area", {}).get("status"),
                 "phone_area_message": (doc.get("checks") or {}).get("phone_area", {}).get("message"),
                 "overall_status": doc.get("overall_status", "UNVERIFIED"),
+                "dp_port_capacity_status": doc.get("dp_port_capacity_status"),
+                "dp_port_capacity": doc.get("dp_port_capacity"),
                 "source_row_values": doc.get("source_row_values") or source,
                 "issue_codes": doc.get("issue_codes"),
                 "findings": doc.get("findings"),
@@ -553,12 +569,22 @@ def export_dp_results(run_id: str, consistency: str | None = Query(default=None,
             "coordinate_conflict_observation_count": 1,
             "eligible_customer_row_count": 1,
             "eligible_distance_fail_row_count": 1,
+            "port_capacity": 1,
+            "assigned_customer_count": 1,
+            "available_port_count": 1,
+            "port_capacity_status": 1,
+            "port_capacity_exceeded_by": 1,
             "issue_codes": 1,
         },
     ).sort("dp_id_normalized", 1).batch_size(1000)
     fields = [
         "dp_id",
         "coordinate_consistency",
+        "port_capacity",
+        "assigned_customer_count",
+        "available_port_count",
+        "port_capacity_status",
+        "port_capacity_exceeded_by",
         "dp_location_observed",
         "observed_row_count",
         "valid_coordinate_observation_count",

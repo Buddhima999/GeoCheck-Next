@@ -34,6 +34,7 @@ The upload profile requires these mapped fields: `customer_id`, `router_number`,
 | `OVERHEAD_DISTANCE_MISMATCH` | Distance field | A supplied overhead-distance value differs beyond approved tolerance from coordinates | Applied when the source CSV includes a reported overhead distance; the 25 m tolerance remains provisional pending approval |
 | `LINE_DISTANCE_INVALID` | Distance field | Non-numeric, negative or invalid value | Invalid line distance must never pass merely because it is below threshold |
 | `DP_COORD_CONFLICT` | DP | Same normalized DP ID has materially different coordinate observations | Report groups/rows; never choose a winner automatically |
+| `DP_PORT_CAPACITY_EXCEEDED` | DP / customer-DP assignment | More distinct customer IDs assigned to a DP than configured ports | Defaults to 8 ports; duplicate rows for one normalized customer at the same DP count once |
 | `CUSTOMER_ID_CONFLICT` | Source row/customer | Same normalized customer ID has incompatible source records | Preserve each row |
 
 ## Distance semantics
@@ -62,6 +63,7 @@ The bundled boundary is copied from the legacy project and is not independently 
 - DP physical-location quality and DP-customer association quality are separate.
 - Customers with confirmed location errors are ineligible to count as evidence against DP association quality.
 - Customer IDs are checked across the completed source run after batch processing. Rows sharing an ID are marked `CUSTOMER_ID_CONFLICT` when rounded coordinates (5 decimal places), trimmed/case-normalized address, or phone digits differ; identical repeated signatures are preserved without this conflict finding.
+- DP port usage is counted per uploaded run from distinct normalized customer IDs assigned to each normalized DP ID. `DP_PORT_CAPACITY` defaults to 8; a DP with more than that number receives `DP_PORT_CAPACITY_EXCEEDED`, and all customer rows assigned to the overloaded DP are flagged. Duplicate rows with the same customer ID on the same DP use one port. Rows without a customer ID are counted separately so missing IDs cannot silently lower the count. This is a CSV consistency check, not a live network or physical port-state query.
 - Provider-region checks stay `UNVERIFIED` when the authoritative mapping is missing or ambiguous. The app does not invent a winning region.
 - Define minimum eligible DP customers and required pass percentage before implementing final aggregate DP pass/fail.
 - Dashboard totals must reconcile with source rows, distinct entities and findings.
