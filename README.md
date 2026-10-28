@@ -13,7 +13,7 @@ Scalable customer and distribution-point (DP/FDP) location data-quality applicat
 
 ## Deploy to Vercel Hobby + MongoDB Atlas
 
-The Vercel project should use `frontend/` as its Root Directory. Vercel hosts the static React frontend; MongoDB Atlas stores application data. The FastAPI API and CSV worker still need a persistent host with a shared upload volume. The worker is a long-running queue consumer, and uploaded CSV files are read from shared disk after the API returns. A Vercel-only deployment would lose this processing path. See [DEPLOYMENT.md](DEPLOYMENT.md) for Atlas, host and Vercel setup, environment variables, and the security requirements before using real customer records.
+Deploy `frontend/` and `backend/` as separate Vercel projects and use MongoDB Atlas. The API can run as a Python Function without Docker. The current CSV upload/worker flow still needs a Blob + durable Queue/Workflow migration before it works on Vercel Hobby: function request bodies are limited to 4.5 MB and the worker currently depends on a persistent process and filesystem. See [DEPLOYMENT.md](DEPLOYMENT.md) for the setup and limitations.
 
 ## Safety and correctness rules
 

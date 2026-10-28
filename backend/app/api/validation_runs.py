@@ -4,6 +4,7 @@ from __future__ import annotations
 import csv
 import io
 import json
+import os
 import secrets
 import uuid
 from datetime import datetime, timezone
@@ -193,6 +194,16 @@ async def upload_validation_csv(
     column_mapping: str | None = Form(default=None),
 ) -> dict[str, Any]:
     """Store a bounded CSV upload and enqueue it; processing happens in a worker."""
+    if os.getenv("VERCEL") == "1" and os.getenv("VERCEL_ENV") != "development":
+        raise HTTPException(
+            status_code=status.HTTP_501_NOT_IMPLEMENTED,
+            detail=(
+                "CSV analysis is not enabled in this Vercel deployment yet. "
+                "It requires durable Blob storage and a Vercel Queue/Workflow consumer; "
+                "the current background worker uses a persistent process and shared disk."
+            ),
+        )
+
     original_filename = _display_filename(file.filename)
     if not original_filename.lower().endswith(".csv"):
         raise HTTPException(status_code=status.HTTP_415_UNSUPPORTED_MEDIA_TYPE, detail="Upload a .csv file.")
