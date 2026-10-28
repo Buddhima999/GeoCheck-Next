@@ -287,6 +287,7 @@ def process_next_queued_run(
             batch_size=configured_batch_size,
             max_rows=configured_max_rows,
             settings=validation_settings,
+            dp_port_capacity=settings.dp_port_capacity,
             **callbacks,
         )
         terminal_status = str(summary.get("status", "FAILED"))
