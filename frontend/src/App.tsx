@@ -47,6 +47,8 @@ type RunSummary = {
   dp_coordinate_consistent: number;
   dp_coordinate_conflict: number;
   dp_coordinate_unverified: number;
+  dp_port_capacity_exceeded: number;
+  dp_port_capacity_limit: number;
   issue_counts: Record<string, number>;
   note: string;
 };
@@ -81,6 +83,11 @@ type DPResult = {
   dp_id: string;
   dp_location_observed?: { lat: number; lon: number } | null;
   coordinate_consistency: string;
+  port_capacity?: number;
+  assigned_customer_count?: number;
+  available_port_count?: number;
+  port_capacity_status?: string;
+  port_capacity_exceeded_by?: number;
   observed_row_count: number;
   valid_coordinate_observation_count: number;
   coordinate_conflict_observation_count: number;
@@ -658,9 +665,9 @@ export default function App() {
             </tbody></table></div>
             <Pagination total={customerPage?.total || 0} skip={customerPage?.skip || 0} limit={customerPage?.limit || PAGE_SIZE} onChange={(skip) => void loadResults("customers", skip)} />
           </> : <>
-            <div className="table-scroll"><table><thead><tr><th>DP ID</th><th>Coordinate state</th><th>Observed rows</th><th>Valid coordinates</th><th>Eligible customer rows</th><th>Distance fail rate</th><th>Association evidence</th><th>Conflict observations</th></tr></thead><tbody>
-              {(dpPage?.items || []).map((item) => <tr key={item.dp_id}><td><strong>{item.dp_id}</strong><small>{item.dp_location_observed ? `${item.dp_location_observed.lat.toFixed(5)}, ${item.dp_location_observed.lon.toFixed(5)}` : "No valid point"}</small></td><td><StatusBadge status={item.coordinate_consistency} /></td><td>{formatNumber(item.observed_row_count)}</td><td>{formatNumber(item.valid_coordinate_observation_count)}</td><td>{formatNumber(item.eligible_customer_row_count)}<small>{formatNumber(item.eligible_distance_assessed_row_count)} distance checks assessed; {formatNumber(item.eligible_distance_pass_row_count)} passed</small></td><td>{item.eligible_distance_fail_percentage === null || item.eligible_distance_fail_percentage === undefined ? "—" : item.eligible_distance_fail_percentage.toFixed(1) + "%" }<small>{formatNumber(item.eligible_distance_fail_row_count)} failure row(s)</small></td><td><strong>{item.association_evidence === "INSUFFICIENT_ELIGIBLE_ROWS" ? "Insufficient evidence" : item.association_evidence === "DISTANCE_FAILURES_OBSERVED" ? "Distance failures observed" : "No distance failures observed"}</strong><small>No approved final pass/fail threshold</small></td><td>{formatNumber(item.coordinate_conflict_observation_count)}</td></tr>)}
-              {!dpPage?.items.length && <tr><td colSpan={8} className="empty-cell">No DP records match these filters.</td></tr>}
+            <div className="table-scroll"><table><thead><tr><th>DP ID</th><th>Coordinate state</th><th>Observed rows</th><th>Port capacity</th><th>Valid coordinates</th><th>Eligible customer rows</th><th>Distance fail rate</th><th>Association evidence</th><th>Conflict observations</th></tr></thead><tbody>
+              {(dpPage?.items || []).map((item) => <tr key={item.dp_id}><td><strong>{item.dp_id}</strong><small>{item.dp_location_observed ? `${item.dp_location_observed.lat.toFixed(5)}, ${item.dp_location_observed.lon.toFixed(5)}` : "No valid point"}</small></td><td><StatusBadge status={item.coordinate_consistency} /></td><td>{formatNumber(item.observed_row_count)}</td><td><StatusBadge status={item.port_capacity_status || "UNVERIFIED"} /><small>{formatNumber(item.assigned_customer_count)} / {formatNumber(item.port_capacity)} customer port(s)</small><small>{formatNumber(item.available_port_count)} free port(s)</small></td><td>{formatNumber(item.valid_coordinate_observation_count)}</td><td>{formatNumber(item.eligible_customer_row_count)}<small>{formatNumber(item.eligible_distance_assessed_row_count)} distance checks assessed; {formatNumber(item.eligible_distance_pass_row_count)} passed</small></td><td>{item.eligible_distance_fail_percentage === null || item.eligible_distance_fail_percentage === undefined ? "—" : item.eligible_distance_fail_percentage.toFixed(1) + "%" }<small>{formatNumber(item.eligible_distance_fail_row_count)} failure row(s)</small></td><td><strong>{item.association_evidence === "INSUFFICIENT_ELIGIBLE_ROWS" ? "Insufficient evidence" : item.association_evidence === "DISTANCE_FAILURES_OBSERVED" ? "Distance failures observed" : "No distance failures observed"}</strong><small>No approved final pass/fail threshold</small></td><td>{formatNumber(item.coordinate_conflict_observation_count)}</td></tr>)}
+              {!dpPage?.items.length && <tr><td colSpan={9} className="empty-cell">No DP records match these filters.</td></tr>}
             </tbody></table></div>
             <Pagination total={dpPage?.total || 0} skip={dpPage?.skip || 0} limit={dpPage?.limit || PAGE_SIZE} onChange={(skip) => void loadResults("dps", skip)} />
           </>}
@@ -696,7 +703,7 @@ export default function App() {
           <div className="issue-explorer-grid">{issueEntries.map(([code, count]) => <button key={code} className="issue-card" onClick={() => { setIssueFilter(code); setResultKind("customers"); setSearchDraft(""); setSearchQuery(""); setResultSkip(0); setTab("results"); void loadResults("customers", 0); }}><div><span className="issue-card-icon"><AlertTriangle size={16} /></span><strong>{code}</strong></div><b>{formatNumber(count)}</b><small>Finding(s) · Click to inspect rows <ChevronRight size={13} /></small></button>)}{!issueEntries.length && <div className="panel empty-state"><strong>No issue codes recorded</strong><span>This run did not record any findings.</span></div>}</div>}
       </section>}
 
-      {tab === "overview" && summary && <section className="panel summary-section"><div className="panel-heading"><div><h2>Selected run quality summary</h2><p>Reference checks can remain unverified and are not counted as confirmed errors.</p></div><StatusBadge status={summary.status} /></div><div className="summary-strip"><span>DP coordinate conflicts <b>{formatNumber(summary.dp_coordinate_conflict)}</b></span><span>Consistent DPs <b>{formatNumber(summary.dp_coordinate_consistent)}</b></span><span>Unverified DPs <b>{formatNumber(summary.dp_coordinate_unverified)}</b></span><span>Eligible customer rows <b>{formatNumber(summary.eligible_for_dp_assessment)}</b></span></div><p className="small-note">{summary.note}</p></section>}
+      {tab === "overview" && summary && <section className="panel summary-section"><div className="panel-heading"><div><h2>Selected run quality summary</h2><p>Reference checks can remain unverified and are not counted as confirmed errors.</p></div><StatusBadge status={summary.status} /></div><div className="summary-strip"><span>DP coordinate conflicts <b>{formatNumber(summary.dp_coordinate_conflict)}</b></span><span>DPs over port capacity <b>{formatNumber(summary.dp_port_capacity_exceeded)}</b></span><span>Configured ports per DP <b>{formatNumber(summary.dp_port_capacity_limit)}</b></span><span>Consistent DPs <b>{formatNumber(summary.dp_coordinate_consistent)}</b></span><span>Unverified DPs <b>{formatNumber(summary.dp_coordinate_unverified)}</b></span><span>Eligible customer rows <b>{formatNumber(summary.eligible_for_dp_assessment)}</b></span></div><p className="small-note">{summary.note}</p></section>}
 
       <footer className="footer"><span>GeoCheck Next · Local validation workspace</span><span><ShieldCheck size={13} /> Keep real customer data restricted</span></footer>
     </main>
