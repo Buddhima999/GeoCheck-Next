@@ -13,6 +13,9 @@ venv/
 # JavaScript
 node_modules/
 frontend/dist/
+frontend/tsconfig.tsbuildinfo
+*.log
+backend/var/
 
 # Generated synthetic data can be large; keep it out of Git.
 test-data/generated/

@@ -15,6 +15,7 @@ db: Database = client[settings.mongo_db_name]
 validation_runs = db["validation_runs"]
 customer_records = db["customer_records"]
 dp_records = db["dp_records"]
+town_zone_cache = db["town_zone_cache"]
 
 
 def ping_database() -> None:
@@ -65,6 +66,15 @@ def ensure_indexes() -> None:
             ("geography.region_id", ASCENDING),
         ],
         name="run_customer_geography",
+    )
+    customer_records.create_index(
+        [
+            ("run_id", ASCENDING),
+            ("source_values.reported_province", ASCENDING),
+            ("source_values.reported_district", ASCENDING),
+            ("source_values.reported_region", ASCENDING),
+        ],
+        name="run_customer_reported_geography",
     )
     dp_records.create_index(
         [("run_id", ASCENDING), ("dp_id_normalized", ASCENDING)],

@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import csv
 import io
+import math
 import re
 from collections.abc import Iterator
 from typing import Any
@@ -12,6 +13,7 @@ from fastapi.responses import StreamingResponse
 from pymongo.collection import Collection
 
 from ..database import customer_records, dp_records, validation_runs
+from ..validation.csv_import import normalize_identifier
 from .validation_runs import require_api_key
 
 router = APIRouter(prefix="/api/validation-runs", tags=["validation-results"])
@@ -100,6 +102,38 @@ def _and_queries(*queries: dict[str, Any] | None) -> dict[str, Any]:
     return {"$and": active}
 
 
+def _reported_geography_query(
+    province: str | None = None,
+    district: str | None = None,
+    region: str | None = None,
+) -> dict[str, Any] | None:
+    """Filter by resolved geography labels, falling back to exact CSV labels."""
+    parts: list[dict[str, Any] | None] = []
+    for key, value in (
+        ("reported_province", province),
+        ("reported_district", district),
+        ("reported_region", region),
+    ):
+        if value is None or not value.strip():
+            continue
+        field = key.removeprefix("reported_")
+        id_path = f"geography.{field}_id"
+        source_path = f"source_values.{key}"
+        if value.strip().upper() == "UNREPORTED":
+            source_fallback = {"$and": [
+                {id_path: {"$exists": False}},
+                {"$or": [{source_path: {"$exists": False}}, {source_path: None}, {source_path: ""}]},
+            ]}
+            parts.append({"$or": [{id_path: "unreported"}, source_fallback]})
+        else:
+            source_fallback = {"$and": [
+                {id_path: {"$exists": False}},
+                {source_path: value.strip()},
+            ]}
+            parts.append({"$or": [{id_path: value.strip().casefold()}, source_fallback]})
+    return _and_queries(*parts)
+
+
 def _strip_mongo_id(document: dict[str, Any]) -> dict[str, Any]:
     document.pop("_id", None)
     return document
@@ -171,6 +205,15 @@ def get_run_summary(run_id: str) -> dict[str, Any]:
     dp_conflict = dps.count_documents({"run_id": run_id, "coordinate_consistency": "CONFLICT"})
     dp_unverified = dps.count_documents({"run_id": run_id, "coordinate_consistency": "UNVERIFIED"})
     dp_port_capacity_exceeded = dps.count_documents({"run_id": run_id, "port_capacity_status": "FAIL"})
+    correct_csv_rows = customers.count_documents({"run_id": run_id, "overall_status": {"$ne": "FAIL"}})
+    correct_customer_locations = customers.count_documents({
+        "run_id": run_id,
+        "$or": [
+            {"customer_location_has_error": False},
+            {"customer_location_has_error": {"$exists": False}, "overall_status": {"$ne": "FAIL"}},
+        ],
+    })
+    correct_dp_locations = dps.count_documents({"run_id": run_id, "dp_assessment_status": "PASS"})
 
     summary = run.get("summary") or {}
     return {
@@ -193,6 +236,15 @@ def get_run_summary(run_id: str) -> dict[str, Any]:
         "dp_coordinate_unverified": dp_unverified,
         "dp_port_capacity_exceeded": dp_port_capacity_exceeded,
         "dp_port_capacity_limit": int(summary.get("dp_port_capacity", 8) or 8),
+        "correct_csv_rows": correct_csv_rows,
+        "correct_csv_rows_percentage": round(correct_csv_rows * 100.0 / customer_total, 2) if customer_total else None,
+        "correct_customer_locations": correct_customer_locations,
+        "correct_customer_locations_percentage": round(correct_customer_locations * 100.0 / customer_total, 2) if customer_total else None,
+        "correct_dp_locations": correct_dp_locations,
+        "correct_dp_locations_percentage": round(correct_dp_locations * 100.0 / dp_total, 2) if dp_total else None,
+        "dp_assessment_fail": dps.count_documents({"run_id": run_id, "dp_assessment_status": "FAIL"}),
+        "dp_assessment_unverified": dps.count_documents({"run_id": run_id, "dp_assessment_status": "UNVERIFIED"}),
+        "customer_dp_limit_m": float(summary.get("customer_dp_limit_m", 500.0)),
         "issue_counts": run.get("issue_counts", {}),
         "processor_summary": summary,
         "note": "Reference-dependent checks remain UNVERIFIED until approved reference datasets are configured.",
@@ -205,6 +257,9 @@ def list_customer_results(
     q: str | None = Query(default=None, max_length=MAX_QUERY_LENGTH),
     issue_code: str | None = Query(default=None, max_length=80),
     eligible_for_dp_assessment: bool | None = Query(default=None),
+    province: str | None = Query(default=None, max_length=120),
+    district: str | None = Query(default=None, max_length=120),
+    region: str | None = Query(default=None, max_length=120),
     limit: int = Query(default=DEFAULT_LIMIT, ge=1, le=MAX_LIMIT),
     skip: int = Query(default=0, ge=0, le=1_000_000),
 ) -> dict[str, Any]:
@@ -216,6 +271,7 @@ def list_customer_results(
         {"issue_codes": issue_code.strip().upper()} if issue_code and issue_code.strip() else None,
         {"eligible_for_dp_assessment": eligible_for_dp_assessment}
         if eligible_for_dp_assessment is not None else None,
+        _reported_geography_query(province, district, region),
     )
     total = customer_records.count_documents(query)
     cursor = customer_records.find(
@@ -250,6 +306,7 @@ def list_customer_results(
             "findings": 1,
             "has_hard_error": 1,
             "eligible_for_dp_assessment": 1,
+            "customer_location_has_error": 1,
         },
     ).sort("row_number", 1).skip(skip).limit(limit)
     return {"items": list(cursor), "total": total, "limit": limit, "skip": skip}
@@ -289,11 +346,19 @@ def list_dp_results(
             "dp_id_normalized": 1,
             "dp_location_observed": 1,
             "coordinate_consistency": 1,
+            "country_boundary_status": 1,
+            "dp_assessment_status": 1,
+            "dp_association_min_pass_fraction": 1,
             "observed_row_count": 1,
             "valid_coordinate_observation_count": 1,
             "coordinate_conflict_observation_count": 1,
             "eligible_customer_row_count": 1,
+            "eligible_distance_assessed_row_count": 1,
+            "eligible_distance_pass_row_count": 1,
             "eligible_distance_fail_row_count": 1,
+            "association_assessed_row_count": 1,
+            "association_pass_row_count": 1,
+            "association_fail_row_count": 1,
             "port_capacity": 1,
             "assigned_customer_count": 1,
             "available_port_count": 1,
@@ -309,38 +374,131 @@ def list_dp_results(
         assessed_rows = int(item.get("eligible_distance_assessed_row_count", 0) or 0)
         failed_rows = int(item.get("eligible_distance_fail_row_count", 0) or 0)
         passed_rows = int(item.get("eligible_distance_pass_row_count", 0) or 0)
+        association_assessed = int(item.get("association_assessed_row_count", 0) or 0)
+        association_failed = int(item.get("association_fail_row_count", 0) or 0)
+        association_passed = int(item.get("association_pass_row_count", 0) or 0)
         item["eligible_distance_assessed_row_count"] = assessed_rows
         item["eligible_distance_pass_row_count"] = passed_rows
         item["eligible_distance_fail_percentage"] = (
             round(failed_rows * 100.0 / assessed_rows, 2) if assessed_rows else None
         )
-        if assessed_rows == 0:
+        item["association_assessed_row_count"] = association_assessed
+        item["association_pass_row_count"] = association_passed
+        item["association_fail_row_count"] = association_failed
+        item["association_fail_percentage"] = round(association_failed * 100.0 / association_assessed, 2) if association_assessed else None
+        if association_assessed == 0:
             item["association_evidence"] = "INSUFFICIENT_ELIGIBLE_ROWS"
-        elif failed_rows > 0:
-            item["association_evidence"] = "DISTANCE_FAILURES_OBSERVED"
+        elif association_failed > 0:
+            item["association_evidence"] = "ASSOCIATION_FAILURES_OBSERVED"
         else:
-            item["association_evidence"] = "NO_DISTANCE_FAILURES_OBSERVED"
-        item["association_threshold_configured"] = False
+            item["association_evidence"] = "NO_ASSOCIATION_FAILURES_OBSERVED"
+        item["association_threshold_configured"] = True
         items.append(item)
     return {"items": items, "total": total, "limit": limit, "skip": skip}
+
+
+@router.get("/{run_id}/dps/{dp_id}/customers", dependencies=[Depends(require_api_key)])
+def list_dp_customer_map_points(
+    run_id: str,
+    dp_id: str,
+    limit: int = Query(default=1000, ge=1, le=1000),
+) -> dict[str, Any]:
+    """Return a bounded set of valid customer coordinates assigned to one FDP."""
+    _get_run_or_404(run_id)
+    normalized_dp_id = normalize_identifier(dp_id)
+    if not normalized_dp_id:
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="FDP ID is required.")
+
+    assigned_query = {"run_id": run_id, "dp_id_normalized": normalized_dp_id}
+    mapped_query = {
+        **assigned_query,
+        "customer_location.lat": {"$exists": True},
+        "customer_location.lon": {"$exists": True},
+    }
+    assigned_rows = customer_records.count_documents(assigned_query)
+    mapped_rows = customer_records.count_documents(mapped_query)
+    cursor = customer_records.find(
+        mapped_query,
+        {
+            "_id": 0,
+            "row_number": 1,
+            "customer_id": 1,
+            "customer_id_normalized": 1,
+            "customer_location": 1,
+            "overall_status": 1,
+            "source_values.address": 1,
+        },
+    ).sort("row_number", 1).limit(limit)
+
+    points = []
+    seen_customers: set[str] = set()
+    for document in cursor:
+        location = document.get("customer_location") or {}
+        lat, lon = location.get("lat"), location.get("lon")
+        if (
+            not isinstance(lat, (int, float)) or isinstance(lat, bool)
+            or not isinstance(lon, (int, float)) or isinstance(lon, bool)
+            or not math.isfinite(lat) or not math.isfinite(lon)
+            or abs(lat) > 90 or abs(lon) > 180
+        ):
+            continue
+        customer_id = document.get("customer_id")
+        row_number = document.get("row_number")
+        identity = str(document.get("customer_id_normalized") or f"row:{row_number}")
+        if identity in seen_customers:
+            continue
+        seen_customers.add(identity)
+        points.append({
+            "customer_id": customer_id,
+            "row_number": row_number,
+            "latitude": lat,
+            "longitude": lon,
+            "address": (document.get("source_values") or {}).get("address"),
+            "status": document.get("overall_status", "UNVERIFIED"),
+        })
+
+    return {
+        "dp_id": dp_id,
+        "assigned_rows": assigned_rows,
+        "mapped_rows": mapped_rows,
+        "returned_points": len(points),
+        "truncated": mapped_rows > limit,
+        "customers": points,
+    }
 
 
 @router.get("/{run_id}/hierarchy", dependencies=[Depends(require_api_key)])
 def get_geographic_hierarchy(
     run_id: str,
+    province: str | None = Query(default=None, max_length=120),
+    district: str | None = Query(default=None, max_length=120),
+    region: str | None = Query(default=None, max_length=120),
     limit: int = Query(default=200, ge=1, le=1000),
     skip: int = Query(default=0, ge=0, le=10_000),
 ) -> dict[str, Any]:
     """Group source-reported province/district/region labels without guessing mappings."""
     _get_run_or_404(run_id)
+    geography_match = _and_queries({"run_id": run_id}, _reported_geography_query(province, district, region)) or {"run_id": run_id}
+    area_summary_cursor = customer_records.aggregate([
+        {"$match": geography_match},
+        {"$group": {
+            "_id": None,
+            "customer_rows": {"$sum": 1},
+            "rows_with_findings": {"$sum": {"$cond": [
+                {"$gt": [{"$size": {"$ifNull": ["$issue_codes", []]}}, 0]}, 1, 0,
+            ]}},
+        }},
+    ], allowDiskUse=True)
+    area_summary_rows = list(area_summary_cursor)
+    area_summary = area_summary_rows[0] if area_summary_rows else {"customer_rows": 0, "rows_with_findings": 0}
     pipeline = [
-        {"$match": {"run_id": run_id}},
+        {"$match": geography_match},
         {
             "$group": {
                 "_id": {
-                    "province": {"$ifNull": ["$source_values.reported_province", "UNREPORTED"]},
-                    "district": {"$ifNull": ["$source_values.reported_district", "UNREPORTED"]},
-                    "region": {"$ifNull": ["$source_values.reported_region", "UNREPORTED"]},
+                    "province": {"$cond": [{"$eq": [{"$ifNull": ["$geography.province_label", {"$ifNull": ["$source_values.reported_province", ""]}]}, ""]}, "UNREPORTED", {"$ifNull": ["$geography.province_label", "$source_values.reported_province"]}]},
+                    "district": {"$cond": [{"$eq": [{"$ifNull": ["$geography.district_label", {"$ifNull": ["$source_values.reported_district", ""]}]}, ""]}, "UNREPORTED", {"$ifNull": ["$geography.district_label", "$source_values.reported_district"]}]},
+                    "region": {"$cond": [{"$eq": [{"$ifNull": ["$geography.region_label", {"$ifNull": ["$source_values.reported_region", ""]}]}, ""]}, "UNREPORTED", {"$ifNull": ["$geography.region_label", "$source_values.reported_region"]}]},
                     "dp_id": "$dp_id_normalized",
                 },
                 "row_count": {"$sum": 1},
@@ -389,7 +547,97 @@ def get_geographic_hierarchy(
         }
         for row in payload.get("items", [])
     ]
-    return {"items": items, "total": total, "limit": limit, "skip": skip}
+    return {
+        "items": items,
+        "total": total,
+        "limit": limit,
+        "skip": skip,
+        "area_customer_rows": int(area_summary.get("customer_rows", 0)),
+        "area_rows_with_findings": int(area_summary.get("rows_with_findings", 0)),
+    }
+
+
+@router.get("/{run_id}/hierarchy/options", dependencies=[Depends(require_api_key)])
+def get_geographic_hierarchy_options(
+    run_id: str,
+    province: str | None = Query(default=None, max_length=120),
+    district: str | None = Query(default=None, max_length=120),
+) -> dict[str, list[str]]:
+    """Return selector values from CSV-reported labels, narrowed by parent selection."""
+    _get_run_or_404(run_id)
+    base = {"run_id": run_id}
+    province_filter = _reported_geography_query(province)
+    district_filter = _reported_geography_query(province, district)
+
+    def values_facet(field: str, match: dict[str, Any]) -> list[str]:
+        label_field = field.removeprefix("reported_")
+        expression = {"$ifNull": [f"$geography.{label_field}_label", {"$ifNull": [f"$source_values.{field}", ""]}]}
+        pipeline = [
+            {"$match": match},
+            {"$group": {"_id": expression}},
+            {"$project": {"value": {"$cond": [{"$eq": ["$_id", ""]}, "UNREPORTED", "$_id"]}}},
+            {"$sort": {"value": 1}},
+        ]
+        return [str(item["value"]) for item in customer_records.aggregate(pipeline, allowDiskUse=True)]
+
+    return {
+        "provinces": values_facet("reported_province", base),
+        "districts": values_facet("reported_district", _and_queries(base, province_filter) or base),
+        "regions": values_facet("reported_region", _and_queries(base, district_filter) or base),
+    }
+
+
+@router.get("/{run_id}/hierarchy/dps", dependencies=[Depends(require_api_key)])
+def list_hierarchy_dps(
+    run_id: str,
+    province: str | None = Query(default=None, max_length=120),
+    district: str | None = Query(default=None, max_length=120),
+    region: str | None = Query(default=None, max_length=120),
+    limit: int = Query(default=DEFAULT_LIMIT, ge=1, le=MAX_LIMIT),
+    skip: int = Query(default=0, ge=0, le=1_000_000),
+) -> dict[str, Any]:
+    """Page DP rollups associated with customer rows in the selected reported area."""
+    _get_run_or_404(run_id)
+    match = _and_queries(
+        {"run_id": run_id},
+        _reported_geography_query(province, district, region),
+        {"dp_id_normalized": {"$exists": True, "$nin": [None, ""]}},
+    )
+    pipeline = [
+        {"$match": match},
+        {"$group": {"_id": {
+            "dp": "$dp_id_normalized",
+            "customer": {"$cond": [
+                {"$eq": [{"$ifNull": ["$customer_id_normalized", ""]}, ""]},
+                {"$concat": ["__missing_customer__", {"$toString": {"$ifNull": ["$row_number", "$_id"]}}]},
+                "$customer_id_normalized",
+            ]},
+        }, "geography_customer_rows": {"$sum": 1}}},
+        {"$group": {"_id": "$_id.dp", "geography_customer_count": {"$sum": 1}, "geography_customer_rows": {"$sum": "$geography_customer_rows"}}},
+        {"$sort": {"_id": 1}},
+        {"$facet": {
+            "items": [
+                {"$skip": skip}, {"$limit": limit},
+                {"$lookup": {
+                    "from": dp_records.name,
+                    "let": {"dp_key": "$_id"},
+                    "pipeline": [{"$match": {"$expr": {"$and": [
+                        {"$eq": ["$run_id", run_id]},
+                        {"$eq": ["$dp_id_normalized", "$$dp_key"]},
+                    ]}}}, {"$limit": 1}],
+                    "as": "dp",
+                }},
+                {"$unwind": {"path": "$dp", "preserveNullAndEmptyArrays": False}},
+                {"$replaceRoot": {"newRoot": {"$mergeObjects": ["$dp", {"geography_customer_count": "$geography_customer_count", "geography_customer_rows": "$geography_customer_rows"}]}}},
+                {"$project": {"_id": 0}},
+            ],
+            "metadata": [{"$count": "total"}],
+        }},
+    ]
+    response = list(customer_records.aggregate(pipeline, allowDiskUse=True))
+    payload = response[0] if response else {"items": [], "metadata": []}
+    total = payload["metadata"][0]["total"] if payload.get("metadata") else 0
+    return {"items": payload.get("items", []), "total": total, "limit": limit, "skip": skip}
 
 
 def _csv_cell(value: Any) -> str:
@@ -563,12 +811,20 @@ def export_dp_results(run_id: str, consistency: str | None = Query(default=None,
             "_id": 0,
             "dp_id": 1,
             "coordinate_consistency": 1,
+            "country_boundary_status": 1,
+            "dp_assessment_status": 1,
+            "dp_association_min_pass_fraction": 1,
             "dp_location_observed": 1,
             "observed_row_count": 1,
             "valid_coordinate_observation_count": 1,
             "coordinate_conflict_observation_count": 1,
             "eligible_customer_row_count": 1,
+            "eligible_distance_assessed_row_count": 1,
+            "eligible_distance_pass_row_count": 1,
             "eligible_distance_fail_row_count": 1,
+            "association_assessed_row_count": 1,
+            "association_pass_row_count": 1,
+            "association_fail_row_count": 1,
             "port_capacity": 1,
             "assigned_customer_count": 1,
             "available_port_count": 1,
@@ -580,6 +836,9 @@ def export_dp_results(run_id: str, consistency: str | None = Query(default=None,
     fields = [
         "dp_id",
         "coordinate_consistency",
+        "country_boundary_status",
+        "dp_assessment_status",
+        "dp_association_min_pass_fraction",
         "port_capacity",
         "assigned_customer_count",
         "available_port_count",
@@ -592,6 +851,10 @@ def export_dp_results(run_id: str, consistency: str | None = Query(default=None,
         "eligible_customer_row_count",
         "eligible_distance_pass_row_count",
         "eligible_distance_fail_row_count",
+        "association_assessed_row_count",
+        "association_pass_row_count",
+        "association_fail_row_count",
+        "association_fail_percentage",
         "eligible_distance_fail_percentage",
         "association_evidence",
         "association_threshold_configured",
@@ -606,12 +869,17 @@ def export_dp_results(run_id: str, consistency: str | None = Query(default=None,
             item["eligible_distance_assessed_row_count"] = assessed_rows
             item["eligible_distance_pass_row_count"] = int(document.get("eligible_distance_pass_row_count", 0) or 0)
             item["eligible_distance_fail_percentage"] = round(failed_rows * 100.0 / assessed_rows, 2) if assessed_rows else None
+            association_assessed = int(document.get("association_assessed_row_count", 0) or 0)
+            association_failed = int(document.get("association_fail_row_count", 0) or 0)
+            item["association_assessed_row_count"] = association_assessed
+            item["association_pass_row_count"] = int(document.get("association_pass_row_count", 0) or 0)
+            item["association_fail_percentage"] = round(association_failed * 100.0 / association_assessed, 2) if association_assessed else None
             item["association_evidence"] = (
-                "INSUFFICIENT_ELIGIBLE_ROWS" if assessed_rows == 0
-                else "DISTANCE_FAILURES_OBSERVED" if failed_rows > 0
-                else "NO_DISTANCE_FAILURES_OBSERVED"
+                "INSUFFICIENT_ELIGIBLE_ROWS" if association_assessed == 0
+                else "ASSOCIATION_FAILURES_OBSERVED" if association_failed > 0
+                else "NO_ASSOCIATION_FAILURES_OBSERVED"
             )
-            item["association_threshold_configured"] = False
+            item["association_threshold_configured"] = True
             yield item
 
     return StreamingResponse(

@@ -23,6 +23,10 @@ Optional aliases can be provided as a string array in properties.aliases for loc
 
 This file is not a geocoder. The address-zone checker only validates a locality when a locality name or approved alias is found in the submitted address. If no name can be matched, the result remains UNVERIFIED instead of guessing the town from free text.
 
+The customer hierarchy browser can also assign a province and district from the customer's coordinates using these polygons. `provider_regions.csv` maps the resolved province/district pair to a provider region. Ambiguous or missing geometry/mappings do not get guessed; where an assignment cannot be made, the hierarchy falls back to the CSV's reported province/district/region labels, then `UNREPORTED`.
+
+This repository includes `backend/reference-data/admin_areas.geojson` with Sri Lanka NSDI province and district polygons. Every customer audit CSV must provide `reported_province`; when a district column is supplied it is checked too. The reported geography check compares the coordinate point to those polygon names. Landline checks parse the geographic fixed-line prefix (for example `036` → Avissawella, Colombo District, Western Province), compare it with the address/locality and reported geography, and confirm that customer coordinates fall within the prefix's expected province. This is a province/numbering-area plausibility check, not a precise exchange-service boundary or exact-address proof. Exact exchange-area confirmation still requires provider-approved LEA geometry in `lea_areas.geojson` or `lea_area_circles.csv`.
+
 ### lea_areas.geojson
 
 A GeoJSON FeatureCollection whose features represent approved telephone exchange/local exchange area polygons. Each feature must have a phone_prefix property (prefix and area_code are also accepted), plus Polygon/MultiPolygon geometry. The longest matching number prefix is used. A missing prefix or absent/ambiguous reference makes the check UNVERIFIED.

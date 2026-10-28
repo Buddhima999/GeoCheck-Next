@@ -19,6 +19,12 @@ class Settings(BaseSettings):
     worker_batch_size: int = 1000
     worker_max_attempts: int = 2
     reference_data_dir: Path = Path(__file__).resolve().parents[1] / "reference-data"
+    country_boundary_tolerance_m: float = 150.0
+    dp_association_min_pass_fraction: float = Field(default=0.5, gt=0.0, le=1.0)
+    osm_town_lookup_enabled: bool = False
+    osm_nominatim_url: str = "https://nominatim.openstreetmap.org"
+    osm_nominatim_email: str | None = None
+    osm_town_max_lookups_per_run: int = 500
 
     # Customer/DP distance rules. Google Routes mode uses driving-road distance,
     # which is not the same measurement as actual overhead cable length.

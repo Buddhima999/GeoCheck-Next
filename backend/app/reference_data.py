@@ -17,6 +17,7 @@ from pathlib import Path
 from typing import Any, Callable
 
 from .config import settings
+from .validation.rules import haversine_m
 
 logger = logging.getLogger("geocheck.references")
 _GRID_DEGREES = 0.25
@@ -109,6 +110,33 @@ def _geometry_contains(geometry: dict[str, Any], lon: float, lat: float) -> bool
     if geometry_type == "MultiPolygon":
         return any(_point_in_polygon(lon, lat, polygon) for polygon in coordinates or [])
     return False
+
+
+def _exterior_segments(geometry: dict[str, Any]):
+    """Yield only exterior polygon edges; coastal tolerance must not fill inland holes."""
+    geometry_type = geometry.get("type")
+    coordinates = geometry.get("coordinates") or []
+    polygons = [coordinates] if geometry_type == "Polygon" else coordinates if geometry_type == "MultiPolygon" else []
+    for polygon in polygons:
+        if not polygon:
+            continue
+        ring = polygon[0]
+        for start, end in zip(ring, ring[1:] + ring[:1]):
+            yield start, end
+
+
+def _distance_to_segment_m(lon: float, lat: float, start: list[float], end: list[float]) -> float:
+    """Approximate local point-to-edge distance, accurate at the short coastal buffer scale."""
+    mean_lat = math.radians(lat)
+    x_scale = 111_320.0 * math.cos(mean_lat)
+    y_scale = 111_320.0
+    px, py = lon * x_scale, lat * y_scale
+    ax, ay = float(start[0]) * x_scale, float(start[1]) * y_scale
+    bx, by = float(end[0]) * x_scale, float(end[1]) * y_scale
+    dx, dy = bx - ax, by - ay
+    denominator = dx * dx + dy * dy
+    t = 0.0 if denominator == 0 else max(0.0, min(1.0, ((px - ax) * dx + (py - ay) * dy) / denominator))
+    return math.hypot(px - (ax + t * dx), py - (ay + t * dy))
 
 
 @dataclass(frozen=True)
@@ -246,6 +274,39 @@ def _read_provider_regions(path: Path) -> tuple[dict[tuple[str, str], set[str]],
     return result, digest
 
 
+def _read_lea_circles(path: Path) -> tuple[dict[str, list[dict[str, Any]]], str | None]:
+    """Load provider-approved phone-prefix circles without inventing centers."""
+    if not path.is_file():
+        return {}, None
+    digest = hashlib.sha256(path.read_bytes()).hexdigest()
+    required = {"phone_prefix", "area_name", "center_latitude", "center_longitude", "radius_m"}
+    try:
+        with path.open("r", newline="", encoding="utf-8-sig") as stream:
+            reader = csv.DictReader(stream, strict=True)
+            headers = {str(header or "").strip().casefold() for header in (reader.fieldnames or [])}
+            if not required.issubset(headers):
+                raise ValueError("lea_area_circles.csv must have phone_prefix,area_name,center_latitude,center_longitude,radius_m columns.")
+            circles: dict[str, list[dict[str, Any]]] = {}
+            for line_number, row in enumerate(reader, start=2):
+                prefix = _clean_phone(row.get("phone_prefix", ""))
+                area_name = str(row.get("area_name", "")).strip()
+                try:
+                    lat = float(row.get("center_latitude", ""))
+                    lon = float(row.get("center_longitude", ""))
+                    radius = float(row.get("radius_m", ""))
+                except (TypeError, ValueError) as exc:
+                    raise ValueError(f"lea_area_circles.csv row {line_number} has invalid center/radius values.") from exc
+                if (not prefix or not area_name or not all(map(math.isfinite, (lat, lon, radius)))
+                        or not 0 <= lat <= 90 or not -180 <= lon <= 180 or radius <= 0):
+                    raise ValueError(f"lea_area_circles.csv row {line_number} has an invalid prefix, center, or radius.")
+                circles.setdefault(prefix, []).append({
+                    "area_name": area_name, "latitude": lat, "longitude": lon, "radius_m": radius,
+                })
+            return circles, digest
+    except (OSError, UnicodeDecodeError, csv.Error) as exc:
+        raise ValueError(f"Could not read lea_area_circles.csv: {exc}") from exc
+
+
 class ReferenceData:
     def __init__(
         self,
@@ -255,7 +316,9 @@ class ReferenceData:
         admin_features: list[SpatialFeature],
         lea_features: list[SpatialFeature],
         provider_regions: dict[tuple[str, str], set[str]],
+        lea_circles: dict[str, list[dict[str, Any]]] | None = None,
         versions: dict[str, str | None],
+        country_boundary_tolerance_m: float = 150.0,
     ):
         self.root = root
         self.country_index = SpatialFeatureIndex(country_features)
@@ -263,6 +326,7 @@ class ReferenceData:
         self.lea_index = SpatialFeatureIndex(lea_features)
         self.provider_regions = provider_regions
         self.versions = versions
+        self.country_boundary_tolerance_m = max(0.0, country_boundary_tolerance_m)
 
         self.has_province_features = any(_level(feature) in _PROVINCE_LEVELS for feature in admin_features)
         self.has_district_features = any(_level(feature) in _DISTRICT_LEVELS for feature in admin_features)
@@ -294,26 +358,38 @@ class ReferenceData:
             if prefix:
                 self.lea_by_prefix.setdefault(prefix, []).append(feature)
                 self.max_phone_prefix_length = max(self.max_phone_prefix_length, len(prefix))
+        self.lea_circles = lea_circles or {}
+        self.max_phone_prefix_length = max(
+            self.max_phone_prefix_length,
+            max((len(prefix) for prefix in self.lea_circles), default=0),
+        )
 
     @classmethod
-    def load(cls, root: Path | None = None) -> "ReferenceData":
+    def load(cls, root: Path | None = None, *, country_boundary_tolerance_m: float | None = None) -> "ReferenceData":
         base = (root or settings.resolved_reference_data_dir).resolve()
         country, country_hash = _read_geojson(base / "country_boundary.geojson")
         admin, admin_hash = _read_geojson(base / "admin_areas.geojson")
         lea, lea_hash = _read_geojson(base / "lea_areas.geojson")
         regions, regions_hash = _read_provider_regions(base / "provider_regions.csv")
+        lea_circles, lea_circles_hash = _read_lea_circles(base / "lea_area_circles.csv")
         return cls(
             root=base,
             country_features=country,
             admin_features=admin,
             lea_features=lea,
             provider_regions=regions,
+            lea_circles=lea_circles,
             versions={
                 "country_boundary.geojson": country_hash,
                 "admin_areas.geojson": admin_hash,
                 "lea_areas.geojson": lea_hash,
+                "lea_area_circles.csv": lea_circles_hash,
                 "provider_regions.csv": regions_hash,
             },
+            country_boundary_tolerance_m=(
+                settings.country_boundary_tolerance_m
+                if country_boundary_tolerance_m is None else country_boundary_tolerance_m
+            ),
         )
 
     def status(self) -> dict[str, Any]:
@@ -328,9 +404,11 @@ class ReferenceData:
 
         return {
             "directory_configured": self.root.is_dir(),
+            "country_boundary_tolerance_m": self.country_boundary_tolerance_m,
             "country_boundary": item("country_boundary.geojson", len(self.country_index.features)),
             "administrative_areas": item("admin_areas.geojson", len(self.admin_index.features)),
             "lea_areas": item("lea_areas.geojson", len(self.lea_index.features)),
+            "lea_area_circles": item("lea_area_circles.csv", sum(len(v) for v in self.lea_circles.values())),
             "provider_regions": item("provider_regions.csv", len(self.provider_regions)),
             "warning": "Only approved, versioned reference data should be placed in this directory. Missing files do not create PASS results.",
         }
@@ -338,7 +416,28 @@ class ReferenceData:
     def country_check(self, lat: float, lon: float) -> bool | None:
         if not self.country_index.features:
             return None
-        return any(feature.contains(lon, lat) for feature in self.country_index.candidates(lon, lat))
+        candidates = self.country_index.candidates(lon, lat)
+        if any(feature.contains(lon, lat) for feature in candidates):
+            return True
+        if self.country_boundary_tolerance_m <= 0:
+            return False
+        margin = self.country_boundary_tolerance_m / 109_000.0
+        near_features = [
+            feature for feature in self.country_index.features
+            if feature.bounds[0] - margin <= lon <= feature.bounds[2] + margin
+            and feature.bounds[1] - margin <= lat <= feature.bounds[3] + margin
+        ]
+        if not near_features:
+            return False
+        nearest = min(
+            (
+                _distance_to_segment_m(lon, lat, start, end)
+                for feature in near_features
+                for start, end in _exterior_segments(feature.geometry)
+            ),
+            default=math.inf,
+        )
+        return nearest <= self.country_boundary_tolerance_m
 
     def address_zone_check(self, address: str, lat: float, lon: float) -> bool | None:
         if not self.locality_by_token:
@@ -356,8 +455,6 @@ class ReferenceData:
         return any(feature.contains(lon, lat) for feature in candidate_names.values())
 
     def phone_area_check(self, phone: str, lat: float, lon: float) -> bool | None:
-        if not self.lea_by_prefix:
-            return None
         normalized_phone = _clean_phone(phone)
         if not normalized_phone:
             return None
@@ -368,7 +465,16 @@ class ReferenceData:
             if match:
                 best = match
         if not best:
-            return None
+            prefix = next(
+                (normalized_phone[:length] for length in range(max_length, 0, -1) if normalized_phone[:length] in self.lea_circles),
+                None,
+            )
+            if prefix is None:
+                return None
+            return any(
+                haversine_m(lat, lon, circle["latitude"], circle["longitude"]) <= circle["radius_m"]
+                for circle in self.lea_circles[prefix]
+            )
         identities = {
             (
                 _normalize_label(_prop(feature, "name", "lea_name", "area_name")),
@@ -430,12 +536,37 @@ class ReferenceData:
 
         return True if observed else None
 
+    def resolve_geography(self, lat: float, lon: float) -> dict[str, str | None]:
+        """Resolve coordinate labels from configured province/district/region references."""
+        province_features = _inside_named_area(self.admin_index, lon, lat, levels=_PROVINCE_LEVELS)
+        district_features = _inside_named_area(self.admin_index, lon, lat, levels=_DISTRICT_LEVELS)
+
+        def unique_name(features: list[SpatialFeature], *keys: str) -> str | None:
+            names = {
+                _normalize_label(_prop(feature, *keys)): str(_prop(feature, *keys)).strip()
+                for feature in features
+                if _normalize_label(_prop(feature, *keys))
+            }
+            return next(iter(names.values())) if len(names) == 1 else None
+
+        province = unique_name(province_features, "name", "province", "province_name")
+        district = unique_name(district_features, "name", "district", "district_name")
+        region: str | None = None
+        if province and district:
+            region_names = self.provider_regions.get(
+                (_normalize_label(province), _normalize_label(district)), set()
+            )
+            if len(region_names) == 1:
+                region = next(iter(region_names)).title()
+        return {"province": province, "district": district, "region": region}
+
     def callbacks(self) -> dict[str, Callable[..., bool | None]]:
         return {
             "country_check": self.country_check,
             "phone_area_check": self.phone_area_check,
             "address_zone_check": self.address_zone_check,
             "geography_check": self.geography_check,
+            "geography_resolver": self.resolve_geography,
         }
 
 

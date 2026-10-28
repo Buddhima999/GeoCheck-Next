@@ -1,0 +1,28 @@
+customer_id,router_number,address,customer_latitude,customer_longitude,dp_id,dp_latitude,dp_longitude,line_distance_m,overhead_distance_m,test_scenario
+SYN-GOOD-001,0710000001,"Synthetic demo locality, Colombo, Sri Lanka",6.927200,79.861250,SYN-DP-CMB,6.927100,79.861200,12.4,12.4,Expected city/location match; mobile format
+SYN-GOOD-002,0770000002,"Synthetic demo locality, Colombo, Sri Lanka",6.927000,79.861320,SYN-DP-CMB,6.927100,79.861200,17.3,17.3,Expected city/location match; mobile format
+SYN-GOOD-003,0110000003,"Synthetic demo locality, Colombo, Sri Lanka",6.927180,79.861120,SYN-DP-CMB,6.927100,79.861200,12.5,12.5,Expected city/location match; Colombo landline format
+SYN-GOOD-004,0750000004,"Synthetic demo locality, Kandy, Sri Lanka",7.290700,80.633700,SYN-DP-KDY,7.290600,80.633600,15.7,15.7,Expected city/location match; mobile format
+SYN-GOOD-005,0810000005,"Synthetic demo locality, Kandy, Sri Lanka",7.290480,80.633660,SYN-DP-KDY,7.290600,80.633600,14.9,14.9,Expected city/location match; Kandy landline format
+SYN-GOOD-006,0760000006,"Synthetic demo locality, Galle, Sri Lanka",6.032920,80.215700,SYN-DP-GAL,6.032800,80.215600,17.3,17.3,Expected city/location match; mobile format
+SYN-GOOD-007,0910000007,"Synthetic demo locality, Galle, Sri Lanka",6.032700,80.215500,SYN-DP-GAL,6.032800,80.215600,15.7,15.7,Expected city/location match; Galle landline format
+SYN-ADDR-008,0780000008,"Synthetic demo locality, Colombo, Sri Lanka",7.290740,80.633700,SYN-DP-KDY,7.290600,80.633600,19.1,19.1,Address says Colombo while coordinates are in Kandy
+SYN-PHONE-009,0110000009,"Synthetic demo locality, Galle, Sri Lanka",6.032900,80.215550,SYN-DP-GAL,6.032800,80.215600,12.4,12.4,Colombo landline area with Galle address/location
+SYN-COUNTRY-010,0700000010,"Synthetic demo locality, Colombo, Sri Lanka",0.000000,0.000000,SYN-DP-CMB,6.927100,79.861200,8888475.7,8888475.7,Customer coordinate outside Sri Lanka
+SYN-RANGE-011,0710000011,"Synthetic demo locality, Colombo, Sri Lanka",120.000000,79.861200,SYN-DP-CMB,6.927100,79.861200,0.0,,Customer latitude outside valid range
+SYN-SWAP-012,0770000012,"Synthetic demo locality, Colombo, Sri Lanka",79.861200,6.927100,SYN-DP-CMB,6.927100,79.861200,0.0,,Customer latitude/longitude deliberately swapped
+SYN-MISSING-013,0750000013,"Synthetic demo locality, Colombo, Sri Lanka",,79.861200,SYN-DP-CMB,6.927100,79.861200,0.0,,Customer latitude deliberately missing
+SYN-DISTANCE-014,0760000014,"Synthetic demo locality, Colombo, Sri Lanka",6.940000,79.861200,SYN-DP-CMB,6.927100,79.861200,1434.4,1434.4,Customer is over 500 m from connected FDP
+SYN-OVERHEAD-015,0780000015,"Synthetic demo locality, Colombo, Sri Lanka",6.927200,79.861300,SYN-DP-CMB,6.927100,79.861200,15.7,9999.0,Reported overhead distance deliberately mismatches coordinates
+SYN-CAP-001,0700000101,"Synthetic demo locality, Colombo, Sri Lanka",6.926700,79.861400,SYN-DP-OVER,6.927100,79.861200,49.7,49.7,Capacity: 9 distinct customers share one 8-port FDP
+SYN-CAP-002,0710000102,"Synthetic demo locality, Colombo, Sri Lanka",6.926800,79.861350,SYN-DP-OVER,6.927100,79.861200,37.2,37.2,Capacity: 9 distinct customers share one 8-port FDP
+SYN-CAP-003,0750000103,"Synthetic demo locality, Colombo, Sri Lanka",6.926900,79.861300,SYN-DP-OVER,6.927100,79.861200,24.8,24.8,Capacity: 9 distinct customers share one 8-port FDP
+SYN-CAP-004,0760000104,"Synthetic demo locality, Colombo, Sri Lanka",6.927000,79.861250,SYN-DP-OVER,6.927100,79.861200,12.4,12.4,Capacity: 9 distinct customers share one 8-port FDP
+SYN-CAP-005,0770000105,"Synthetic demo locality, Colombo, Sri Lanka",6.927100,79.861200,SYN-DP-OVER,6.927100,79.861200,0.0,0.0,Capacity: 9 distinct customers share one 8-port FDP
+SYN-CAP-006,0780000106,"Synthetic demo locality, Colombo, Sri Lanka",6.927200,79.861150,SYN-DP-OVER,6.927100,79.861200,12.4,12.4,Capacity: 9 distinct customers share one 8-port FDP
+SYN-CAP-007,0700000107,"Synthetic demo locality, Colombo, Sri Lanka",6.927300,79.861100,SYN-DP-OVER,6.927100,79.861200,24.8,24.8,Capacity: 9 distinct customers share one 8-port FDP
+SYN-CAP-008,0710000108,"Synthetic demo locality, Colombo, Sri Lanka",6.927400,79.861050,SYN-DP-OVER,6.927100,79.861200,37.2,37.2,Capacity: 9 distinct customers share one 8-port FDP
+SYN-CAP-009,0750000109,"Synthetic demo locality, Colombo, Sri Lanka",6.927500,79.861000,SYN-DP-OVER,6.927100,79.861200,49.7,49.7,Capacity: 9 distinct customers share one 8-port FDP
+SYN-DPCONFLICT-025,0710000025,"Synthetic demo locality, Colombo, Sri Lanka",6.927200,79.861300,SYN-DP-CONFLICT,6.927100,79.861200,15.7,15.7,First location for intentionally conflicting FDP ID
+SYN-DPCONFLICT-026,0770000026,"Synthetic demo locality, Galle, Sri Lanka",6.032900,80.215700,SYN-DP-CONFLICT,6.032800,80.215600,15.7,15.7,"Second, conflicting location for the same FDP ID"
+SYN-DPOUT-027,0750000027,"Synthetic demo locality, Colombo, Sri Lanka",6.927150,79.861250,SYN-DP-OUTSIDE,0.000000,0.000000,8888481.4,8888481.4,FDP coordinate outside Sri Lanka; customer is far away

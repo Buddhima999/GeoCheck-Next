@@ -11,6 +11,10 @@ Scalable customer and distribution-point (DP/FDP) location data-quality applicat
 - Core collections: validation_runs, customer_records, dp_records
 - Reference data: versioned local GIS/LEA/provider-region files
 
+## Deploy to Vercel Hobby + MongoDB Atlas
+
+The Vercel project should use `frontend/` as its Root Directory. Vercel hosts the static React frontend; MongoDB Atlas stores application data. The FastAPI API and CSV worker still need a persistent host with a shared upload volume. The worker is a long-running queue consumer, and uploaded CSV files are read from shared disk after the API returns. A Vercel-only deployment would lose this processing path. See [DEPLOYMENT.md](DEPLOYMENT.md) for Atlas, host and Vercel setup, environment variables, and the security requirements before using real customer records.
+
 ## Safety and correctness rules
 
 1. Preserve source rows; never silently discard duplicates or conflicting records.

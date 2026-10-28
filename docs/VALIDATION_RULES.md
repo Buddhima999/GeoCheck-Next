@@ -11,9 +11,9 @@ Missing results must never default to PASS.
 
 ## Required customer audit CSV
 
-The upload profile requires these mapped fields: `customer_id`, `router_number`, `customer_latitude`, `customer_longitude`, `cust_address` (mapped to logical `address`), `dp_id`, `dp_latitude`, `dp_longitude`, and `line_distance_m`. Header matching ignores punctuation/case and accepts common aliases. The legacy `phone_number` field can substitute for `router_number` when present. Missing required columns are rejected during upload; invalid row values become findings in the report.
+The upload profile requires these mapped fields: `customer_id`, `router_number`, `customer_latitude`, `customer_longitude`, `cust_address` (mapped to logical `address`), `reported_province`, `dp_id`, `dp_latitude`, `dp_longitude`, and `line_distance_m`. Header matching ignores punctuation/case and accepts common aliases. The legacy `phone_number` field can substitute for `router_number` when present. Missing required columns are rejected during upload; invalid row values become findings in the report.
 
-`router_number` is the customer's Sri Lankan fixed-line telephone number (legacy `phone_number` is accepted as an alternative). The validator checks the number format, parses domestic `0XX XXX XXXX` and international `+94 XX XXX XXXX` forms, and uses the TRCSL-published geographic area-code list to infer a numbering area. For example, `0112345211` maps to the Colombo numbering area. The inferred area is compared with locality text in `address` and the supplied district/province, and with an optional configured coordinate-to-area reference. A mismatch is a review finding; incomplete evidence remains `UNVERIFIED`. Area codes do not reveal exact house coordinates, prove subscriber ownership, or establish the customer's current location. See the [TRCSL numbering resources](https://www.trc.gov.lk/pages_e.php?id=121) and [published numbering manual](https://www.trc.gov.lk/content/files/policy/numberingmanual.pdf).
+`router_number` is the customer's Sri Lankan fixed-line telephone number (legacy `phone_number` is accepted as an alternative). The validator checks the number format, parses domestic `0XX XXX XXXX` and international `+94 XX XXX XXXX` forms, and uses the TRCSL-published geographic area-code list to infer a numbering area. For example, `0112345211` maps to the Colombo numbering area. The inferred area is compared with locality text in `address`, the supplied province/district, and the customer coordinate?s province using the bundled Sri Lanka NSDI province and district polygons. Provider-approved exchange polygons or circles can add exact area checks when supplied. For example, `036` indicates Avissawella in Western Province; the province/numbering-area match is a plausibility check, not proof of the exact house or telephone exchange coverage. Mobile numbers are `UNVERIFIED` for area validation and are not treated as location errors. Area codes do not reveal exact house coordinates, prove subscriber ownership, or establish the customer's current location. See the [TRCSL numbering resources](https://www.trc.gov.lk/pages_e.php?id=121) and [published numbering manual](https://www.trc.gov.lk/content/files/policy/numberingmanual.pdf).
 
 ## Proposed rule catalogue
 
@@ -24,8 +24,8 @@ The upload profile requires these mapped fields: `customer_id`, `router_number`,
 | `COORD_OUT_OF_RANGE` | Customer / DP observation | Latitude outside [-90, 90] or longitude outside [-180, 180] | Fail |
 | `COORD_ZERO_PLACEHOLDER` | Customer / DP observation | Both coordinates zero | Flag placeholder |
 | `COORD_POSSIBLE_SWAP` | Customer / DP observation | Swapped values make geographic sense while originals do not | Warning; never auto-correct |
-| `COUNTRY_BOUNDARY` | Customer | Customer point outside the configured Sri Lanka polygon | Boundary data is a starting asset from the legacy repository; verify source/accuracy before operational use |
-| `ROUTER_NUMBER_FORMAT_INVALID` | Customer | Number is not a 10-digit Sri Lankan fixed-line number | A mobile number is not accepted in this field |
+| `COUNTRY_BOUNDARY` / `DP_COUNTRY_BOUNDARY` | Customer / DP | Point is outside the configured Sri Lanka polygon and its coastal tolerance | `COUNTRY_BOUNDARY_TOLERANCE_M` defaults to 150 m; boundary data remains unverified source material |
+| `ROUTER_NUMBER_FORMAT_INVALID` | Customer | Non-mobile number is not a 10-digit Sri Lankan fixed-line number | Mobile number area is `UNVERIFIED`, not a fault |
 | `ROUTER_NUMBER_AREA_CODE_UNVERIFIED` | Customer | Ten-digit number prefix is not in the configured geographic landline list | Leave unverified rather than guessing a locality |
 | `PHONE_AREA_MISMATCH` | Customer | Geographic phone area conflicts with address, reported geography or configured coordinate-area reference | Review finding; number area is not exact geolocation |
 | `PHONE_AREA_UNVERIFIED` | Customer | Numbering area is known, but independent location evidence is insufficient | Needs address locality or approved area geometry |
@@ -34,6 +34,7 @@ The upload profile requires these mapped fields: `customer_id`, `router_number`,
 | `OVERHEAD_DISTANCE_MISMATCH` | Distance field | A supplied overhead-distance value differs beyond approved tolerance from coordinates | Applied when the source CSV includes a reported overhead distance; the 25 m tolerance remains provisional pending approval |
 | `LINE_DISTANCE_INVALID` | Distance field | Non-numeric, negative or invalid value | Invalid line distance must never pass merely because it is below threshold |
 | `DP_COORD_CONFLICT` | DP | Same normalized DP ID has materially different coordinate observations | Report groups/rows; never choose a winner automatically |
+| `DP_PHONE_AREA_MISMATCH` | DP / assignment | DP lies outside the configured area for an assigned customer's fixed-line prefix | Requires approved LEA polygon or center/radius reference |
 | `DP_PORT_CAPACITY_EXCEEDED` | DP / customer-DP assignment | More distinct customer IDs assigned to a DP than configured ports | Defaults to 8 ports; duplicate rows for one normalized customer at the same DP count once |
 | `CUSTOMER_ID_CONFLICT` | Source row/customer | Same normalized customer ID has incompatible source records | Preserve each row |
 
@@ -50,20 +51,20 @@ Two distance measurements are kept separate:
 
 ### Google address validation
 
-When `GOOGLE_GEOCODING_ENABLED=true` and a backend-only `GOOGLE_MAPS_SERVER_KEY` is configured, each distinct address is geocoded with a per-run request cap and cache. The result is compared to customer coordinates using `GOOGLE_ADDRESS_MATCH_TOLERANCE_M` (default 500 m). If geocoding fails, the system reports `UNVERIFIED`; it does not assert that the customer address is wrong. When Google geocoding is off, approved locality polygons may provide an area-level check; absent reference data leaves it unverified. Google Maps API access requires the appropriate APIs and billing configuration; restrict the key to the required APIs and backend usage.
+When `GOOGLE_GEOCODING_ENABLED=true` and a backend-only `GOOGLE_MAPS_SERVER_KEY` is configured, each distinct address is geocoded with a per-run request cap and cache. The result is compared to customer coordinates using `GOOGLE_ADDRESS_MATCH_TOLERANCE_M` (default 500 m). Alternatively, `OSM_TOWN_LOOKUP_ENABLED=true` uses only the last comma-delimited town token, selects the most common towns up to the configured cap, requests boundaries sequentially at <=1 request/second, and caches polygons in MongoDB. It requires an operator contact email and remains off by default. Do not send confidential address data to public Nominatim. If a town polygon cannot be resolved, the result is `UNVERIFIED`. When external geocoding is off, approved locality polygons may provide the area-level check; absent reference data leaves it unverified.
 
 ## Geographic boundary
 
-The bundled boundary is copied from the legacy project and is not independently certified. The point-in-polygon check determines whether a coordinate falls inside that configured polygon; it does not independently prove an address, active service, or cadastral land status. Boundary precision, island coverage and inland-water handling must be reviewed with the provider before operational decisions.
+The bundled boundary is copied from the legacy project and is not independently certified. Both customer and DP points use the configured polygon, with `COUNTRY_BOUNDARY_TOLERANCE_M` (150 m by default) applied only outside exterior polygon edges; inland holes are not buffered. This does not independently prove an address, active service, or cadastral land status. Boundary precision, island coverage and inland-water handling must be reviewed with the provider before operational decisions.
 
 ## Aggregation
 
 - A row with several findings counts once toward rows-with-errors; each finding remains individually queryable.
 - Customer and DP metrics report passing, failing and unverified counts.
-- DP physical-location quality and DP-customer association quality are separate.
+- The dashboard's CSV-row and customer-location percentages count records without a confirmed `FAIL`; `UNVERIFIED` checks do not count as errors. The DP-location percentage counts only DPs with `PASS`.
+- A DP is `PASS` only when its coordinate observations are consistent, it passes the country-boundary check, and a strict majority of eligible, assessable customer assignments pass distance and available phone-area evidence. The default majority threshold is configured by `DP_ASSOCIATION_MIN_PASS_FRACTION=0.5`; a DP with no assessable customer evidence is `UNVERIFIED`.
 - Customers with confirmed location errors are ineligible to count as evidence against DP association quality.
 - Customer IDs are checked across the completed source run after batch processing. Rows sharing an ID are marked `CUSTOMER_ID_CONFLICT` when rounded coordinates (5 decimal places), trimmed/case-normalized address, or phone digits differ; identical repeated signatures are preserved without this conflict finding.
 - DP port usage is counted per uploaded run from distinct normalized customer IDs assigned to each normalized DP ID. `DP_PORT_CAPACITY` defaults to 8; a DP with more than that number receives `DP_PORT_CAPACITY_EXCEEDED`, and all customer rows assigned to the overloaded DP are flagged. Duplicate rows with the same customer ID on the same DP use one port. Rows without a customer ID are counted separately so missing IDs cannot silently lower the count. This is a CSV consistency check, not a live network or physical port-state query.
 - Provider-region checks stay `UNVERIFIED` when the authoritative mapping is missing or ambiguous. The app does not invent a winning region.
-- Define minimum eligible DP customers and required pass percentage before implementing final aggregate DP pass/fail.
 - Dashboard totals must reconcile with source rows, distinct entities and findings.

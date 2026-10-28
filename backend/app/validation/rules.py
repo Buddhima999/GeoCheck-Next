@@ -334,6 +334,23 @@ def validate_row(
             if outcome is False:
                 add("REPORTED_GEOGRAPHY_MISMATCH", FAIL, "warning", "Reported geography conflicts with resolved assignment.")
 
+    # Assess the DP independently so one valid point cannot hide a second bad one.
+    if d_state == "valid" and d_lat is not None and d_lon is not None:
+        if country_check is None:
+            checks["dp_country_boundary"] = _check(UNVERIFIED, message="Approved land-boundary data is not configured.")
+        else:
+            dp_inside = country_check(d_lat, d_lon)
+            checks["dp_country_boundary"] = _check(
+                UNVERIFIED if dp_inside is None else PASS if dp_inside else FAIL
+            )
+            if dp_inside is False:
+                add("DP_COUNTRY_BOUNDARY", FAIL, "error", "DP point is outside the configured Sri Lanka boundary.", "dp_latitude")
+    else:
+        checks["dp_country_boundary"] = _check(
+            UNVERIFIED if d_state == "possible_swap" else NOT_APPLICABLE,
+            message="DP coordinates are not usable for the country-boundary check.",
+        )
+
     # The upload's router_number is the customer's fixed-line telephone number.
     # Keep format parsing separate from address/coordinate consistency validation.
     area_info = _infer_sri_lanka_landline_area(router_number)
@@ -362,11 +379,15 @@ def validate_row(
         )
     elif area_kind == "missing":
         checks["router_number_format"] = _check(FAIL, message="Customer fixed-line telephone number is missing.")
+    elif area_kind == "mobile":
+        checks["router_number_format"] = _check(
+            UNVERIFIED,
+            message="Mobile number has no geographic area code; location cannot be verified from this number.",
+        )
+        add("PHONE_AREA_UNVERIFIED", UNVERIFIED, "info", "Mobile numbers do not identify a geographic area.", "router_number")
     else:
         reason = (
-            "A mobile number was supplied, but this field requires a Sri Lankan fixed-line number."
-            if area_kind == "mobile"
-            else "Expected a 10-digit Sri Lankan fixed-line number such as 0112345211 or an international +94 format."
+            "Expected a 10-digit Sri Lankan fixed-line number such as 0112345211 or an international +94 format."
         )
         checks["router_number_format"] = _check(FAIL, message=reason)
         if area_kind != "missing":
@@ -389,9 +410,27 @@ def validate_row(
         address_codes = _area_codes_mentioned(address)
         reported_district = _normalise_district(values.get("reported_district", ""))
         reported_province = _normalise_province(values.get("reported_province", ""))
+        coordinate_province_outcome: bool | None = None
+        if geography_check is not None and c_state == "valid" and c_lat is not None and c_lon is not None:
+            coordinate_province_outcome = geography_check(
+                {"reported_province": area_province}, c_lat, c_lon
+            )
         callback_outcome: bool | None = None
         if phone_area_check is not None and c_state == "valid" and c_lat is not None and c_lon is not None:
             callback_outcome = phone_area_check(area_info["normalized_number"], c_lat, c_lon)
+        dp_area_outcome = None
+        if phone_area_check is not None and d_state == "valid" and d_lat is not None and d_lon is not None:
+            dp_area_outcome = phone_area_check(area_info["normalized_number"], d_lat, d_lon)
+        checks["phone_area_dp"] = _check(
+            UNVERIFIED if dp_area_outcome is None else PASS if dp_area_outcome else FAIL,
+            message=("DP point matches the configured telephone-area reference." if dp_area_outcome is True else
+                     "DP point conflicts with the configured telephone-area reference." if dp_area_outcome is False else
+                     "No configured telephone-area geometry can verify the DP point."),
+        )
+        checks["phone_area_dp"].update({"area_code": area_code, "area_name": area_name})
+        checks["phone_area_dp"]["area_required_for_assessment"] = True
+        if dp_area_outcome is False:
+            add("DP_PHONE_AREA_MISMATCH", FAIL, "warning", "DP coordinates fall outside the customer's telephone-area reference.", "dp_latitude")
 
         contradictory_evidence: list[str] = []
         matching_evidence: list[str] = []
@@ -420,6 +459,14 @@ def validate_row(
                 contradictory_evidence.append(
                     f"reported province is {reported_province}, while {area_name} is in {area_province} province"
                 )
+        if coordinate_province_outcome is False:
+            contradictory_evidence.append(
+                f"customer coordinates fall outside the {area_province} province associated with {area_name}"
+            )
+        elif coordinate_province_outcome is True:
+            matching_evidence.append(f"customer coordinates fall within {area_province} province")
+        else:
+            matching_evidence.append("customer coordinate-to-province check is unavailable")
         if callback_outcome is False:
             contradictory_evidence.append("configured coordinate-to-phone-area reference reports a mismatch")
         elif callback_outcome is True:
@@ -437,20 +484,21 @@ def validate_row(
                 "normalized_number": area_info["normalized_number"],
             })
             add("PHONE_AREA_MISMATCH", FAIL, "warning", message, "router_number")
-        elif matching_evidence and (
-            any(evidence.startswith("address text") for evidence in matching_evidence)
-            or any(evidence.startswith("reported district") for evidence in matching_evidence)
-            or callback_outcome is True
+        elif (
+            coordinate_province_outcome is True
+            and reported_province == area_province
         ):
             message = (
                 f"Area code {area_code} indicates the {area_name} numbering area and is consistent "
-                f"with the available location evidence ({'; '.join(matching_evidence)}). "
-                "This is a plausibility check, not proof of the subscriber's exact address."
+                f"with the reported {area_province} province and customer coordinates. "
+                "This confirms province-level plausibility only, not the exact telephone exchange or subscriber address."
             )
             checks["phone_area"] = _check(PASS, message=message)
             checks["phone_area"].update({
                 "area_code": area_code, "area_name": area_name,
                 "normalized_number": area_info["normalized_number"],
+                "province": area_province,
+                "verification_level": "province_and_landline_area_plausibility",
             })
         else:
             message = (
@@ -478,9 +526,15 @@ def validate_row(
         })
     else:
         checks["phone_area"] = _check(
-            NOT_APPLICABLE if area_kind in {"mobile", "invalid", "missing"} else UNVERIFIED,
-            message="No recognised Sri Lankan fixed-line area can be inferred from this number.",
+            UNVERIFIED if area_kind == "mobile" else NOT_APPLICABLE if area_kind in {"invalid", "missing"} else UNVERIFIED,
+            message="Mobile number has no geographic area; location cannot be verified from this number." if area_kind == "mobile" else "No recognised Sri Lankan fixed-line area can be inferred from this number.",
         )
+        if area_kind == "mobile":
+            checks["phone_area_dp"] = _check(NOT_APPLICABLE, message="Mobile number has no geographic area; DP area comparison is not applicable.")
+            checks["phone_area_dp"]["area_required_for_assessment"] = False
+        elif area_kind in {"invalid", "missing", "unknown_area"}:
+            checks["phone_area_dp"] = _check(UNVERIFIED, message="No recognized fixed-line area is available for DP comparison.")
+            checks["phone_area_dp"]["area_required_for_assessment"] = False
 
     direct_distance: float | None = None
     if c_state == "valid" and d_state == "valid":
@@ -629,6 +683,10 @@ def validate_row(
         "dp_id_normalized": re.sub(r"\s+", " ", dp_id).casefold() or None,
         "customer_location": {"lat": c_lat, "lon": c_lon} if c_lat is not None and c_lon is not None else None,
         "dp_location_observed": {"lat": d_lat, "lon": d_lon} if d_lat is not None and d_lon is not None else None,
+        "customer_location_has_error": any(
+            checks.get(name, {}).get("status") == FAIL
+            for name in ("customer_coordinates", "country_boundary", "address_zone", "phone_area", "router_number_format", "reported_geography")
+        ),
         "source_values": {str(k): v for k, v in values.items()},
         "checks": checks,
         "issue_codes": issue_codes,

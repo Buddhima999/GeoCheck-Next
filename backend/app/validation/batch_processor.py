@@ -16,7 +16,7 @@ from pymongo import UpdateOne
 from pymongo.collection import Collection
 
 from .csv_import import iter_mapped_rows
-from .rules import FAIL, PASS, ValidationSettings, haversine_m, validate_row
+from .rules import FAIL, PASS, UNVERIFIED, ValidationSettings, haversine_m, validate_row
 
 # A confirmed error affecting a customer's own location makes that row unsuitable
 # as evidence against DP association quality. Distance-to-DP failure itself is not
@@ -34,6 +34,8 @@ CUSTOMER_LOCATION_ERROR_CODES = frozenset(
         "ADDRESS_MISSING",
         "REPORTED_GEOGRAPHY_MISMATCH",
         "PHONE_AREA_MISMATCH",
+        "ROUTER_NUMBER_MISSING",
+        "ROUTER_NUMBER_FORMAT_INVALID",
         "DP_COORD_CONFLICT",
     }
 )
@@ -505,10 +507,30 @@ def _group_dp_observations(results: list[dict[str, Any]]) -> dict[str, dict[str,
                 "eligible_distance_assessed_rows": 0,
                 "eligible_distance_pass_rows": 0,
                 "eligible_distance_fail_rows": 0,
+                "dp_boundary_pass_rows": 0,
+                "dp_boundary_fail_rows": 0,
+                "dp_boundary_unverified_rows": 0,
+                "dp_phone_area_fail_rows": 0,
+                "dp_phone_area_pass_rows": 0,
+                "association_pass_rows": 0,
+                "association_fail_rows": 0,
+                "association_assessed_rows": 0,
             },
         )
         group["row_count"] += 1
         checks = result.get("checks", {})
+        boundary_status = (checks.get("dp_country_boundary") or {}).get("status")
+        if boundary_status == PASS:
+            group["dp_boundary_pass_rows"] += 1
+        elif boundary_status == FAIL:
+            group["dp_boundary_fail_rows"] += 1
+        else:
+            group["dp_boundary_unverified_rows"] += 1
+        dp_area_status = (checks.get("phone_area_dp") or {}).get("status")
+        if dp_area_status == FAIL:
+            group["dp_phone_area_fail_rows"] += 1
+        elif dp_area_status == PASS:
+            group["dp_phone_area_pass_rows"] += 1
         dp_check = checks.get("dp_coordinates", {}) if isinstance(checks, Mapping) else {}
         point = _valid_point(result.get("dp_location_observed")) if dp_check.get("status") == PASS else None
         if point is not None:
@@ -520,6 +542,14 @@ def _group_dp_observations(results: list[dict[str, Any]]) -> dict[str, dict[str,
                 distance_status = distance_check.get("status")
                 if distance_status in {PASS, FAIL}:
                     group["eligible_distance_assessed_rows"] += 1
+                    area_required = bool((checks.get("phone_area_dp") or {}).get("area_required_for_assessment"))
+                    if not area_required or dp_area_status in {PASS, FAIL}:
+                        group["association_assessed_rows"] += 1
+                        association_failed = distance_status == FAIL or dp_area_status == FAIL
+                        if association_failed:
+                            group["association_fail_rows"] += 1
+                        else:
+                            group["association_pass_rows"] += 1
                     if distance_status == PASS:
                         group["eligible_distance_pass_rows"] += 1
                     else:
@@ -573,6 +603,14 @@ def _make_dp_updates(
             "eligible_distance_assessed_row_count": group.get("eligible_distance_assessed_rows", 0),
             "eligible_distance_pass_row_count": group.get("eligible_distance_pass_rows", 0),
             "eligible_distance_fail_row_count": group["eligible_distance_fail_rows"],
+            "dp_boundary_pass_row_count": group["dp_boundary_pass_rows"],
+            "dp_boundary_fail_row_count": group["dp_boundary_fail_rows"],
+            "dp_boundary_unverified_row_count": group["dp_boundary_unverified_rows"],
+            "dp_phone_area_pass_row_count": group["dp_phone_area_pass_rows"],
+            "dp_phone_area_fail_row_count": group["dp_phone_area_fail_rows"],
+            "association_pass_row_count": group["association_pass_rows"],
+            "association_fail_row_count": group["association_fail_rows"],
+            "association_assessed_row_count": group["association_assessed_rows"],
         }
 
         set_on_insert = {
@@ -592,6 +630,14 @@ def _make_dp_updates(
             "eligible_distance_assessed_row_count": group.get("eligible_distance_assessed_rows", 0),
             "eligible_distance_pass_row_count": group.get("eligible_distance_pass_rows", 0),
             "eligible_distance_fail_row_count": group["eligible_distance_fail_rows"],
+            "dp_boundary_pass_row_count": group["dp_boundary_pass_rows"],
+            "dp_boundary_fail_row_count": group["dp_boundary_fail_rows"],
+            "dp_boundary_unverified_row_count": group["dp_boundary_unverified_rows"],
+            "dp_phone_area_pass_row_count": group["dp_phone_area_pass_rows"],
+            "dp_phone_area_fail_row_count": group["dp_phone_area_fail_rows"],
+            "association_pass_row_count": group["association_pass_rows"],
+            "association_fail_row_count": group["association_fail_rows"],
+            "association_assessed_row_count": group["association_assessed_rows"],
         }
         update: dict[str, Any] = {
             "$setOnInsert": set_on_insert,
@@ -624,6 +670,69 @@ def _make_dp_updates(
     return operations, summaries
 
 
+def _finalize_dp_assessments(
+    *,
+    run_id: str,
+    dp_records: Collection,
+    min_pass_fraction: float,
+    batch_size: int = 500,
+) -> dict[str, int]:
+    """Set each DP's evidence-based result after all its customer rows are aggregated."""
+    cursor = dp_records.find(
+        {"run_id": run_id},
+        {
+            "dp_id_normalized": 1,
+            "coordinate_consistency": 1,
+            "valid_coordinate_observation_count": 1,
+            "dp_boundary_pass_row_count": 1,
+            "dp_boundary_fail_row_count": 1,
+            "dp_boundary_unverified_row_count": 1,
+            "eligible_distance_assessed_row_count": 1,
+            "association_pass_row_count": 1,
+            "association_fail_row_count": 1,
+        },
+    ).batch_size(batch_size)
+    operations: list[UpdateOne] = []
+    counts = {"PASS": 0, "FAIL": 0, "UNVERIFIED": 0}
+
+    def flush() -> None:
+        if operations:
+            dp_records.bulk_write(operations, ordered=False)
+            operations.clear()
+
+    for dp in cursor:
+        boundary_pass = int(dp.get("dp_boundary_pass_row_count", 0) or 0)
+        boundary_fail = int(dp.get("dp_boundary_fail_row_count", 0) or 0)
+        boundary_unknown = int(dp.get("dp_boundary_unverified_row_count", 0) or 0)
+        assessed = int(dp.get("association_assessed_row_count", 0) or 0)
+        passed = int(dp.get("association_pass_row_count", 0) or 0)
+        consistency = dp.get("coordinate_consistency")
+        if boundary_fail or consistency == "CONFLICT":
+            boundary_status = FAIL if boundary_fail else PASS
+            assessment = FAIL
+        elif boundary_pass and not boundary_unknown:
+            boundary_status = PASS
+            if consistency != "CONSISTENT" or assessed == 0:
+                assessment = UNVERIFIED
+            else:
+                pass_fraction = passed / assessed
+                meets_threshold = pass_fraction == 1.0 if min_pass_fraction == 1.0 else pass_fraction > min_pass_fraction
+                assessment = PASS if meets_threshold else FAIL
+        else:
+            boundary_status = UNVERIFIED
+            assessment = UNVERIFIED
+        counts[assessment] += 1
+        operations.append(UpdateOne(
+            {"run_id": run_id, "dp_id_normalized": dp.get("dp_id_normalized")},
+            {"$set": {"country_boundary_status": boundary_status, "dp_assessment_status": assessment,
+                      "dp_association_min_pass_fraction": min_pass_fraction}},
+        ))
+        if len(operations) >= batch_size:
+            flush()
+    flush()
+    return counts
+
+
 def process_csv_file(
     csv_path: str | Path,
     *,
@@ -636,10 +745,12 @@ def process_csv_file(
     max_rows: int | None = None,
     settings: ValidationSettings = ValidationSettings(),
     dp_port_capacity: int = 8,
+    dp_association_min_pass_fraction: float = 0.5,
     country_check: Callable[[float, float], bool | None] | None = None,
     phone_area_check: Callable[[str, float, float], bool | None] | None = None,
     address_zone_check: Callable[[str, float, float], bool | None] | None = None,
     geography_check: Callable[[Mapping[str, Any], float, float], bool | None] | None = None,
+    geography_resolver: Callable[[float, float], Mapping[str, str | None]] | None = None,
     route_distance_check: Callable[[float, float, float, float], float | None] | None = None,
     geocode_address_check: Callable[[str, float, float], float | None] | None = None,
 ) -> dict[str, Any]:
@@ -655,6 +766,8 @@ def process_csv_file(
         raise ValueError("max_rows must be at least 1 when configured")
     if dp_port_capacity < 1:
         raise ValueError("dp_port_capacity must be at least 1")
+    if not 0 < dp_association_min_pass_fraction <= 1:
+        raise ValueError("dp_association_min_pass_fraction must be between 0 and 1")
 
     start_time = utc_now()
     validation_runs.update_one(
@@ -732,6 +845,27 @@ def process_csv_file(
                     for code in codes:
                         counters[f"issue:{code}"] += 1
 
+                    source_values = result.get("source_values", {}) or {}
+                    point = result.get("customer_location")
+                    resolved: Mapping[str, str | None] = {}
+                    if geography_resolver is not None and isinstance(point, Mapping):
+                        try:
+                            resolved = geography_resolver(float(point["lat"]), float(point["lon"]))
+                        except (KeyError, TypeError, ValueError):
+                            resolved = {}
+                    province = str(resolved.get("province") or source_values.get("reported_province") or "UNREPORTED").strip()
+                    district = str(resolved.get("district") or source_values.get("reported_district") or "UNREPORTED").strip()
+                    region = str(resolved.get("region") or source_values.get("reported_region") or "UNREPORTED").strip()
+                    geography = {
+                        "province_label": province,
+                        "province_id": province.casefold(),
+                        "district_label": district,
+                        "district_id": district.casefold(),
+                        "region_label": region,
+                        "region_id": region.casefold(),
+                        "source": "REFERENCE" if any(resolved.get(key) for key in ("province", "district", "region")) else "CSV" if any(source_values.get(key) for key in ("reported_province", "reported_district", "reported_region")) else "UNRESOLVED",
+                    }
+
                     documents.append(
                         {
                             "run_id": run_id,
@@ -752,7 +886,8 @@ def process_csv_file(
                             "source_row_values": result.get("source_row_values", {}),
                             "dp_id": result.get("dp_id"),
                             "dp_id_normalized": result.get("dp_id_normalized"),
-                            "source_values": result.get("source_values", {}),
+                            "source_values": source_values,
+                            "geography": geography,
                             "phone_normalized": "".join(
                                 character
                                 for character in str(
@@ -764,6 +899,7 @@ def process_csv_file(
                             ),
                             "search_terms_normalized": _search_terms_normalized(result),
                             "customer_location": result.get("customer_location"),
+                            "customer_location_has_error": result.get("customer_location_has_error", False),
                             "dp_location_observed": result.get("dp_location_observed"),
                             "checks": result.get("checks", {}),
                             "issue_codes": codes,
@@ -860,6 +996,12 @@ def process_csv_file(
                 },
             )
 
+        dp_assessments = _finalize_dp_assessments(
+            run_id=run_id,
+            dp_records=dp_records,
+            min_pass_fraction=dp_association_min_pass_fraction,
+        )
+
         completed = utc_now()
         summary = {
             "rows_processed": rows_processed,
@@ -870,6 +1012,11 @@ def process_csv_file(
             "dp_port_capacity_exceeded_count": dp_capacity["exceeded_dp_count"],
             "dp_port_capacity_exceeded_rows": dp_capacity["affected_rows"],
             "dp_port_capacity_excess_customer_count": dp_capacity["excess_customer_count"],
+            "dp_assessment_pass_count": dp_assessments[PASS],
+            "dp_assessment_fail_count": dp_assessments[FAIL],
+            "dp_assessment_unverified_count": dp_assessments["UNVERIFIED"],
+            "dp_association_min_pass_fraction": dp_association_min_pass_fraction,
+            "customer_dp_limit_m": settings.customer_dp_limit_m,
             "rows_with_findings": int(counters["rows_with_findings"]),
             "rows_with_hard_errors": int(counters["rows_with_hard_errors"]),
             "finding_count": sum(value for key, value in counters.items() if key.startswith("issue:")),

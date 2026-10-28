@@ -64,6 +64,8 @@ services:
     build:
       context: ./frontend
       args:
+        VITE_API_BASE_URL: ${VITE_API_BASE_URL:-}
+        VITE_GOOGLE_MAPS_API_KEY: ${VITE_GOOGLE_MAPS_API_KEY:-}
         VITE_MAP_TILE_URL: ${VITE_MAP_TILE_URL:-}
     restart: unless-stopped
     ports:

@@ -20,12 +20,13 @@ from pymongo.collection import Collection
 from pymongo.errors import PyMongoError
 
 from .config import settings
-from .database import client, customer_records, dp_records, ensure_indexes, ping_database, validation_runs
+from .database import client, customer_records, dp_records, ensure_indexes, ping_database, town_zone_cache, validation_runs
 from .upload_storage import remove_upload, resolve_upload_path
 from .reference_data import ReferenceData, load_reference_data
 from .validation.batch_processor import process_csv_file
 from .validation.csv_import import iter_mapped_rows
 from .validation.google_maps import GoogleMapsClient
+from .validation.osm_town_zones import NominatimTownZoneClient
 from .validation.rules import ValidationSettings
 
 logger = logging.getLogger("geocheck.worker")
@@ -190,6 +191,7 @@ def process_next_queued_run(
     file_key = run.get("input_file_key")
     terminal_status = "FAILED"
     google_maps_client: GoogleMapsClient | None = None
+    osm_town_client: NominatimTownZoneClient | None = None
     try:
         mapping = run.get("column_mapping")
         if not isinstance(mapping, dict) or not mapping:
@@ -257,6 +259,30 @@ def process_next_queued_run(
             {"$set": restart_fields, "$unset": unset_fields},
         )
         callbacks = reference_data.callbacks() if reference_data is not None else {}
+        if settings.osm_town_lookup_enabled and settings.osm_nominatim_email:
+            osm_town_client = NominatimTownZoneClient(
+                town_zone_cache,
+                base_url=settings.osm_nominatim_url,
+                email=settings.osm_nominatim_email,
+                max_lookups=settings.osm_town_max_lookups_per_run,
+            )
+            run_collection.update_one(
+                {"run_id": run_id, "status": "PROCESSING"},
+                {"$set": {"stage": "ADDRESS_ZONE_PREPARATION", "last_progress_at": utc_now()}},
+            )
+            selected_towns = osm_town_client.prepare(
+                str(csv_path), mapping, max_rows=configured_max_rows,
+            )
+            local_address_zone_check = callbacks.get("address_zone_check")
+
+            def combined_address_zone_check(address: str, lat: float, lon: float) -> bool | None:
+                local = local_address_zone_check(address, lat, lon) if local_address_zone_check else None
+                return local if local is not None else osm_town_client.check(address, lat, lon)
+
+            callbacks["address_zone_check"] = combined_address_zone_check
+            logger.info("Address-zone lookup enabled for run %s: selected %s common towns.", run_id, selected_towns)
+        elif settings.osm_town_lookup_enabled:
+            logger.warning("OSM town lookup is enabled but OSM_NOMINATIM_EMAIL is missing; address checks will use local references only.")
         distance_method = str(settings.distance_method).strip().casefold()
         if distance_method not in {"straight_line", "google_routes"}:
             raise ValueError("DISTANCE_METHOD must be straight_line or google_routes.")
@@ -288,9 +314,14 @@ def process_next_queued_run(
             max_rows=configured_max_rows,
             settings=validation_settings,
             dp_port_capacity=settings.dp_port_capacity,
+            dp_association_min_pass_fraction=settings.dp_association_min_pass_fraction,
             **callbacks,
         )
         terminal_status = str(summary.get("status", "FAILED"))
+        if osm_town_client is not None:
+            summary["osm_town_lookup_enabled"] = True
+            summary["osm_town_lookup_queries"] = osm_town_client.queries_used
+            run_collection.update_one({"run_id": run_id}, {"$set": {"summary": summary}})
         logger.info(
             "Validation run %s ended with status=%s rows=%s",
             run_id,
@@ -321,6 +352,11 @@ def process_next_queued_run(
                 google_maps_client.close()
             except Exception:
                 logger.warning("Could not close Google Maps client for run %s", run_id or "unknown")
+        if osm_town_client is not None:
+            try:
+                osm_town_client.close()
+            except Exception:
+                logger.warning("Could not close Nominatim client for run %s", run_id or "unknown")
         try:
             current = run_collection.find_one({"run_id": run_id}, {"status": 1})
             if current and current.get("status") in {"COMPLETED", "FAILED"}:

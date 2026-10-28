@@ -1,0 +1,9 @@
+customer_id,phone_number,address,reported_province,customer_latitude,customer_longitude,dp_id,dp_latitude,dp_longitude,line_distance_m,overhead_distance_m
+SYN-CUST-001,0110000001,"Synthetic test address 1, Colombo",Western,6.927200,79.861250,SYN-FDP-001,6.927100,79.861200,12.4,12.4
+SYN-CUST-002,0110000002,"Synthetic test address 2, Colombo",Western,6.926900,79.861300,SYN-FDP-001,6.927100,79.861200,24.8,24.8
+SYN-CUST-003,0110000003,"Synthetic test address 3, Colombo",Western,6.927300,79.861000,SYN-FDP-001,6.927100,79.861200,31.3,31.3
+SYN-CUST-004,0110000004,"Synthetic test address 4, Colombo",Western,6.926800,79.861000,SYN-FDP-001,6.927100,79.861200,40.0,40.0
+SYN-CUST-005,0110000005,"Synthetic test address 5, Colombo",Western,6.923900,79.862700,SYN-FDP-002,6.923800,79.862600,15.7,15.7
+SYN-CUST-006,0110000006,"Synthetic test address 6, Colombo",Western,6.923600,79.862500,SYN-FDP-002,6.923800,79.862600,24.8,24.8
+SYN-CUST-007,0110000007,"Synthetic test address 7, Colombo",Western,6.924000,79.862400,SYN-FDP-002,6.923800,79.862600,31.3,31.3
+SYN-CUST-008,0110000008,"Synthetic test address 8, Colombo",Western,6.923600,79.862800,SYN-FDP-002,6.923800,79.862600,31.3,31.3

@@ -13,8 +13,8 @@ from fastapi import APIRouter, Depends, File, Form, Header, HTTPException, Uploa
 from pymongo.errors import PyMongoError
 
 from ..config import settings
-from ..database import validation_runs
-from ..upload_storage import resolve_upload_path, upload_directory
+from ..database import customer_records, dp_records, validation_runs
+from ..upload_storage import remove_upload, resolve_upload_path, upload_directory
 from ..validation.csv_import import FIELD_ALIASES, REQUIRED_AUDIT_FIELDS, REQUIRED_COORDINATE_FIELDS, detect_mapping, normalize_header, validate_audit_mapping, validate_mapping
 
 router = APIRouter(prefix="/api/validation-runs", tags=["validation-runs"])
@@ -305,3 +305,50 @@ def get_validation_run(run_id: str) -> dict[str, Any]:
     if run is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Validation run not found.")
     return _public_run(run)
+
+
+@router.delete("/{run_id}", dependencies=[Depends(require_api_key)])
+def delete_validation_run(run_id: str) -> dict[str, Any]:
+    """Delete a finished run, all its result rows, and any retained source CSV."""
+    run = validation_runs.find_one(
+        {"run_id": run_id},
+        {"_id": 0, "status": 1, "input_file_key": 1},
+    )
+    if run is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Validation run not found.")
+
+    current_status = str(run.get("status", "")).upper()
+    if current_status not in {"COMPLETED", "FAILED", "DELETING"}:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Only completed or failed runs can be deleted. Wait for processing to finish.",
+        )
+
+    # Claim the deletion before removing data so a retry can safely finish a
+    # partially completed cleanup, while active workers remain protected.
+    if current_status != "DELETING":
+        claimed = validation_runs.update_one(
+            {"run_id": run_id, "status": current_status},
+            {"$set": {"status": "DELETING", "deletion_started_at": utc_now()}},
+        )
+        if not getattr(claimed, "matched_count", 0):
+            latest = validation_runs.find_one({"run_id": run_id}, {"_id": 0, "status": 1})
+            latest_status = str((latest or {}).get("status", "")).upper()
+            if latest_status != "DELETING":
+                raise HTTPException(
+                    status_code=status.HTTP_409_CONFLICT,
+                    detail="The run changed state and could not be deleted. Refresh the upload list and try again.",
+                )
+
+    try:
+        remove_upload(run.get("input_file_key"))
+        customer_records.delete_many({"run_id": run_id})
+        dp_records.delete_many({"run_id": run_id})
+        validation_runs.delete_one({"run_id": run_id, "status": "DELETING"})
+    except (OSError, PyMongoError) as exc:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Deletion started but cleanup did not finish. Retry deleting this run to complete cleanup.",
+        ) from exc
+
+    return {"run_id": run_id, "deleted": True}

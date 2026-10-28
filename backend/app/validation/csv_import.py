@@ -36,7 +36,7 @@ REQUIRED_COORDINATE_FIELDS = (
 # accepted as a legacy alternative to router_number.
 REQUIRED_AUDIT_FIELDS = (
     "customer_id", "router_number", "customer_latitude", "customer_longitude",
-    "address", "dp_id", "dp_latitude", "dp_longitude", "line_distance_m",
+    "address", "reported_province", "dp_id", "dp_latitude", "dp_longitude", "line_distance_m",
 )
 
 

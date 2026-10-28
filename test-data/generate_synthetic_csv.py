@@ -68,8 +68,8 @@ def build_row(index: int, row_count: int, dp_count: int, dp_points: list[tuple[f
 
     row: dict[str, object] = {
         "customer_id": f"SYN-C-{index + 1:07d}",
-        "phone_number": f"07X-TEST-{index + 1:06d}",
-        "address": f"Synthetic locality {index % 1000 + 1}, test record {index + 1}",
+        "phone_number": f"011{index + 1:07d}",
+        "address": f"Synthetic locality {index % 1000 + 1}, Colombo, test record {index + 1}",
         "customer_latitude": f"{customer_lat:.7f}",
         "customer_longitude": f"{customer_lon:.7f}",
         "dp_id": f"SYN-DP-{dp_index + 1:06d}",
@@ -77,8 +77,8 @@ def build_row(index: int, row_count: int, dp_count: int, dp_points: list[tuple[f
         "dp_longitude": f"{dp_lon:.7f}",
         "line_distance_m": f"{overhead + rng.uniform(10, 60):.1f}",
         "overhead_distance_m": f"{overhead:.1f}",
-        "reported_province": "SYNTHETIC-PROVINCE",
-        "reported_district": "SYNTHETIC-DISTRICT",
+        "reported_province": "Western",
+        "reported_district": "Colombo",
         "reported_region": "SYNTHETIC-REGION-01",
     }
 
