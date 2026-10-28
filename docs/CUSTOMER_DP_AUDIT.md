@@ -24,6 +24,7 @@ The example values are illustrative only; do not use them as provider data. Head
 - If Google Geocoding is enabled, the returned point is compared to the supplied customer coordinate using `GOOGLE_ADDRESS_MATCH_TOLERANCE_M` (default 500 m). A failed lookup stays `UNVERIFIED`; the system doesn't state that the address is wrong without enough evidence.
 - If Google Geocoding is off, address-zone checks require approved locality polygons. The included Sri Lanka country boundary is not a full address or street geocoder.
 - Repeated DP IDs with coordinates that conflict beyond the configured tolerance are flagged. Customer ID conflicts across the run are also flagged.
+- Each DP is assumed to have 8 customer ports by default (`DP_PORT_CAPACITY=8`). If more than 8 distinct customer IDs in the uploaded CSV are assigned to one DP, the DP is marked `FAIL` with `DP_PORT_CAPACITY_EXCEEDED` and every row assigned to it is flagged. Duplicate source rows with the same normalized customer ID and DP consume one counted port. The DP results table and DP CSV export show assigned customers, capacity, free ports and capacity status. This checks the uploaded assignment data; it does not query a live provider network inventory.
 
 ## Status meanings
 
