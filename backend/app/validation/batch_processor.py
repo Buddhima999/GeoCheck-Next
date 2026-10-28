@@ -267,6 +267,215 @@ def _mark_dp_conflicted_rows(
     return {"affected_rows": affected_rows, "rows_newly_with_findings": newly_finding_rows}
 
 
+
+def _iter_dp_customer_counts(customer_records: Collection, run_id: str, batch_size: int):
+    """Yield distinct customer counts per DP, using MongoDB aggregation in production.
+
+    A normalized customer ID is counted once per DP. Rows without an ID use their
+    source-row number as a conservative unique key so missing IDs cannot silently
+    lower the port-use count. The in-memory path exists only for small test fakes.
+    """
+    if hasattr(customer_records, "aggregate"):
+        pipeline = [
+            {
+                "$match": {
+                    "run_id": run_id,
+                    "dp_id_normalized": {"$nin": [None, ""]},
+                }
+            },
+            {
+                "$project": {
+                    "dp_id_normalized": 1,
+                    "dp_id": 1,
+                    "_capacity_customer_key": {
+                        "$cond": [
+                            {"$eq": [{"$ifNull": ["$customer_id_normalized", ""]}, ""]},
+                            {
+                                "$concat": [
+                                    "__missing_customer_row__",
+                                    {
+                                        "$toString": {
+                                            "$ifNull": ["$row_number", "$_id"]
+                                        }
+                                    },
+                                ]
+                            },
+                            "$customer_id_normalized",
+                        ]
+                    },
+                }
+            },
+            {
+                "$group": {
+                    "_id": {
+                        "dp_id_normalized": "$dp_id_normalized",
+                        "customer_key": "$_capacity_customer_key",
+                    },
+                    "dp_id": {"$first": "$dp_id"},
+                }
+            },
+            {
+                "$group": {
+                    "_id": "$_id.dp_id_normalized",
+                    "dp_id": {"$first": "$dp_id"},
+                    "distinct_customer_count": {"$sum": 1},
+                }
+            },
+            {"$sort": {"_id": 1}},
+        ]
+        return customer_records.aggregate(pipeline, allowDiskUse=True).batch_size(batch_size)
+
+    grouped: dict[str, dict[str, Any]] = {}
+    for row in customer_records.find({"run_id": run_id}):
+        normalized_dp = str(row.get("dp_id_normalized") or "").strip()
+        if not normalized_dp:
+            continue
+        group = grouped.setdefault(
+            normalized_dp,
+            {"dp_id": row.get("dp_id"), "customer_keys": set()},
+        )
+        customer_id = str(row.get("customer_id_normalized") or "").strip()
+        if customer_id:
+            key = customer_id
+        else:
+            row_key = row.get("row_number", row.get("_id", len(group["customer_keys"])))
+            key = f"__missing_customer_row__{row_key}"
+        group["customer_keys"].add(key)
+
+    return [
+        {
+            "_id": normalized_dp,
+            "dp_id": group["dp_id"],
+            "distinct_customer_count": len(group["customer_keys"]),
+        }
+        for normalized_dp, group in sorted(grouped.items())
+    ]
+
+
+def _mark_dp_port_capacity_violations(
+    *,
+    run_id: str,
+    customer_records: Collection,
+    dp_records: Collection,
+    port_capacity: int = 8,
+    batch_size: int = 500,
+) -> dict[str, int]:
+    """Record per-run DP port usage and flag DPs assigned to too many customers."""
+    if port_capacity < 1:
+        raise ValueError("DP port capacity must be at least 1")
+    if batch_size < 1:
+        raise ValueError("DP capacity batch_size must be at least 1")
+    if not (
+        hasattr(customer_records, "find")
+        and hasattr(customer_records, "update_many")
+        and hasattr(dp_records, "bulk_write")
+    ):
+        return {
+            "affected_rows": 0,
+            "rows_newly_with_findings": 0,
+            "exceeded_dp_count": 0,
+            "excess_customer_count": 0,
+        }
+
+    finding_code = "DP_PORT_CAPACITY_EXCEEDED"
+    finding = {
+        "code": finding_code,
+        "status": FAIL,
+        "severity": "error",
+        "message": (
+            f"This DP is assigned to more distinct customers than its configured "
+            f"capacity of {port_capacity} ports."
+        ),
+    }
+    affected_rows = 0
+    rows_newly_with_findings = 0
+    exceeded_dp_count = 0
+    excess_customer_count = 0
+
+    def apply_batch(items: list[dict[str, Any]]) -> None:
+        nonlocal affected_rows, rows_newly_with_findings
+        nonlocal exceeded_dp_count, excess_customer_count
+        operations: list[UpdateOne] = []
+        overloaded_dp_ids: list[str] = []
+        for item in items:
+            normalized_dp = str(item.get("_id") or "").strip()
+            if not normalized_dp:
+                continue
+            try:
+                assigned_count = int(item.get("distinct_customer_count", 0))
+            except (TypeError, ValueError):
+                continue
+            over_capacity = assigned_count > port_capacity
+            update: dict[str, Any] = {
+                "$set": {
+                    "port_capacity": port_capacity,
+                    "assigned_customer_count": assigned_count,
+                    "available_port_count": max(0, port_capacity - assigned_count),
+                    "port_capacity_status": FAIL if over_capacity else PASS,
+                    "port_capacity_exceeded_by": max(0, assigned_count - port_capacity),
+                    "port_capacity_checked_at": utc_now(),
+                }
+            }
+            if over_capacity:
+                update["$addToSet"] = {"issue_codes": finding_code}
+                overloaded_dp_ids.append(normalized_dp)
+                exceeded_dp_count += 1
+                excess_customer_count += assigned_count - port_capacity
+            else:
+                update["$pull"] = {"issue_codes": finding_code}
+            operations.append(
+                UpdateOne(
+                    {"run_id": run_id, "dp_id_normalized": normalized_dp},
+                    update,
+                )
+            )
+
+        if operations:
+            dp_records.bulk_write(operations, ordered=False)
+        if not overloaded_dp_ids:
+            return
+
+        base_query = {
+            "run_id": run_id,
+            "dp_id_normalized": {"$in": overloaded_dp_ids},
+        }
+        rows_newly_with_findings += customer_records.count_documents(
+            {**base_query, "issue_codes": []}
+        )
+        update_result = customer_records.update_many(
+            {**base_query, "issue_codes": {"$ne": finding_code}},
+            {
+                "$addToSet": {
+                    "issue_codes": finding_code,
+                    "findings": finding,
+                },
+                "$set": {
+                    "overall_status": FAIL,
+                    "has_fault": True,
+                    "dp_port_capacity_status": FAIL,
+                    "dp_port_capacity": port_capacity,
+                },
+            },
+        )
+        affected_rows += int(getattr(update_result, "modified_count", 0))
+
+    pending: list[dict[str, Any]] = []
+    for item in _iter_dp_customer_counts(customer_records, run_id, batch_size):
+        pending.append(item)
+        if len(pending) >= batch_size:
+            apply_batch(pending)
+            pending = []
+    if pending:
+        apply_batch(pending)
+
+    return {
+        "affected_rows": affected_rows,
+        "rows_newly_with_findings": rows_newly_with_findings,
+        "exceeded_dp_count": exceeded_dp_count,
+        "excess_customer_count": excess_customer_count,
+    }
+
+
 def _valid_point(value: object) -> tuple[float, float] | None:
     if not isinstance(value, Mapping):
         return None
@@ -426,6 +635,7 @@ def process_csv_file(
     batch_size: int = 1000,
     max_rows: int | None = None,
     settings: ValidationSettings = ValidationSettings(),
+    dp_port_capacity: int = 8,
     country_check: Callable[[float, float], bool | None] | None = None,
     phone_area_check: Callable[[str, float, float], bool | None] | None = None,
     address_zone_check: Callable[[str, float, float], bool | None] | None = None,
@@ -443,6 +653,8 @@ def process_csv_file(
         raise ValueError("batch_size must be at least 1")
     if max_rows is not None and max_rows < 1:
         raise ValueError("max_rows must be at least 1 when configured")
+    if dp_port_capacity < 1:
+        raise ValueError("dp_port_capacity must be at least 1")
 
     start_time = utc_now()
     validation_runs.update_one(
@@ -626,12 +838,38 @@ def process_csv_file(
                 },
             )
 
+        dp_capacity = _mark_dp_port_capacity_violations(
+            run_id=run_id,
+            customer_records=customer_records,
+            dp_records=dp_records,
+            port_capacity=dp_port_capacity,
+            batch_size=min(batch_size, 500),
+        )
+        capacity_rows = dp_capacity["affected_rows"]
+        if capacity_rows:
+            counters["issue:DP_PORT_CAPACITY_EXCEEDED"] += capacity_rows
+            counters["rows_with_findings"] += dp_capacity["rows_newly_with_findings"]
+            validation_runs.update_one(
+                {"run_id": run_id},
+                {
+                    "$inc": {
+                        "issue_counts.DP_PORT_CAPACITY_EXCEEDED": capacity_rows,
+                        "rows_with_findings": dp_capacity["rows_newly_with_findings"],
+                    },
+                    "$set": {"last_progress_at": utc_now()},
+                },
+            )
+
         completed = utc_now()
         summary = {
             "rows_processed": rows_processed,
             "source_rows_seen": source_rows_seen,
             "blank_rows_skipped": blank_rows_skipped,
             "batches_processed": batches_processed,
+            "dp_port_capacity": dp_port_capacity,
+            "dp_port_capacity_exceeded_count": dp_capacity["exceeded_dp_count"],
+            "dp_port_capacity_exceeded_rows": dp_capacity["affected_rows"],
+            "dp_port_capacity_excess_customer_count": dp_capacity["excess_customer_count"],
             "rows_with_findings": int(counters["rows_with_findings"]),
             "rows_with_hard_errors": int(counters["rows_with_hard_errors"]),
             "finding_count": sum(value for key, value in counters.items() if key.startswith("issue:")),
