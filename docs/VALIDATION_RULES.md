@@ -34,6 +34,7 @@ The upload profile requires these mapped fields: `customer_id`, `router_number`,
 | `OVERHEAD_DISTANCE_MISMATCH` | Distance field | A supplied overhead-distance value differs beyond approved tolerance from coordinates | Applied when the source CSV includes a reported overhead distance; the 25 m tolerance remains provisional pending approval |
 | `LINE_DISTANCE_INVALID` | Distance field | Non-numeric, negative or invalid value | Invalid line distance must never pass merely because it is below threshold |
 | `DP_COORD_CONFLICT` | DP | Same normalized DP ID has materially different coordinate observations | Report groups/rows; never choose a winner automatically |
+| `DP_PORT_CAPACITY_EXCEEDED` | DP / customer-DP assignment | More distinct customer IDs assigned to a DP than configured ports | Defaults to 8 ports; duplicate rows for one normalized customer at the same DP count once |
 | `CUSTOMER_ID_CONFLICT` | Source row/customer | Same normalized customer ID has incompatible source records | Preserve each row |
 
 ## Distance semantics
