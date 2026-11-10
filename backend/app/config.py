@@ -18,7 +18,6 @@ class Settings(BaseSettings):
     worker_stale_after_seconds: int = 900
     worker_batch_size: int = 1000
     worker_max_attempts: int = 2
-    run_csv_worker: bool = False
     reference_data_dir: Path = Path(__file__).resolve().parents[1] / "reference-data"
     country_boundary_tolerance_m: float = 150.0
     dp_association_min_pass_fraction: float = Field(default=0.5, gt=0.0, le=1.0)
