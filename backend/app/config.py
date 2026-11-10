@@ -53,11 +53,15 @@ class Settings(BaseSettings):
 
     @property
     def cors_origins(self) -> list[str]:
-        return [
+        configured = [
             origin.strip()
             for origin in self.api_cors_origins.split(",")
             if origin.strip()
         ]
+        # The production frontend is hosted as a separate Vercel project.
+        # Keep it allowed even when API_CORS_ORIGINS retains the local default.
+        production_frontend = "https://geo-check-next-frontend.vercel.app"
+        return list(dict.fromkeys([*configured, production_frontend]))
 
     @property
     def resolved_upload_dir(self) -> Path:
