@@ -11,9 +11,9 @@ Scalable customer and distribution-point (DP/FDP) location data-quality applicat
 - Core collections: validation_runs, customer_records, dp_records
 - Reference data: versioned local GIS/LEA/provider-region files
 
-## Deploy to Vercel Hobby + MongoDB Atlas
+## Production deployment
 
-Deploy `frontend/` and `backend/` as separate Vercel projects and use MongoDB Atlas. The API can run as a Python Function without Docker. The current CSV upload/worker flow still needs a Blob + durable Queue/Workflow migration before it works on Vercel Hobby: function request bodies are limited to 4.5 MB and the worker currently depends on a persistent process and filesystem. See [DEPLOYMENT.md](DEPLOYMENT.md) for the setup and limitations.
+Keep the static frontend on Vercel and deploy the Python API plus its worker on the single Render service described in `render.yaml`. That service uses MongoDB Atlas for the queue/results and a persistent disk for source CSVs; it does not require Docker. Set the Vercel frontend's `VITE_API_BASE_URL` to the Render service URL. Follow [DEPLOYMENT.md](DEPLOYMENT.md) for the setup. The Vercel backend can remain deployed for health checks, but it does not process CSV uploads.
 
 ## Safety and correctness rules
 

@@ -127,9 +127,8 @@ const PAGE_SIZE = 50;
 // production API directly for the deployed static frontend; local Vite still
 // uses VITE_API_BASE_URL (or its /api proxy) as configured by developers.
 const API_BASE_URL = (
-  import.meta.env.PROD
-    ? "https://geo-check-next.vercel.app"
-    : import.meta.env.VITE_API_BASE_URL || ""
+  import.meta.env.VITE_API_BASE_URL ||
+  (import.meta.env.PROD ? "https://geo-check-next.vercel.app" : "")
 ).trim().replace(/\/$/, "");
 const GOOGLE_MAPS_KEY = (import.meta.env.VITE_GOOGLE_MAPS_API_KEY || "").trim();
 const OSM_TILES = import.meta.env.VITE_MAP_TILE_URL || "https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png";

@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import logging
 import socket
+import threading
 import time
 import uuid
 from datetime import datetime, timedelta, timezone
@@ -371,7 +372,11 @@ def process_next_queued_run(
     return True
 
 
-def run_worker() -> None:
+def run_worker(
+    stop_event: threading.Event | None = None,
+    *,
+    close_client: bool = True,
+) -> None:
     """Poll the durable queue until the process is stopped."""
     if settings.worker_poll_seconds <= 0:
         raise ValueError("WORKER_POLL_SECONDS must be greater than zero")
@@ -384,7 +389,7 @@ def run_worker() -> None:
     reference_data = load_reference_data()
     logger.info("GeoCheck validation worker started.")
     try:
-        while True:
+        while stop_event is None or not stop_event.is_set():
             try:
                 mark_stale_processing_runs(
                     validation_runs,
@@ -393,14 +398,21 @@ def run_worker() -> None:
                 )
                 did_work = process_next_queued_run(reference_data=reference_data)
                 if not did_work:
-                    time.sleep(settings.worker_poll_seconds)
+                    if stop_event is None:
+                        time.sleep(settings.worker_poll_seconds)
+                    else:
+                        stop_event.wait(settings.worker_poll_seconds)
             except KeyboardInterrupt:
                 break
             except Exception:
                 logger.exception("Worker loop encountered an operational error.")
-                time.sleep(settings.worker_poll_seconds)
+                if stop_event is None:
+                    time.sleep(settings.worker_poll_seconds)
+                else:
+                    stop_event.wait(settings.worker_poll_seconds)
     finally:
-        client.close()
+        if close_client:
+            client.close()
         logger.info("GeoCheck validation worker stopped.")
 
 
