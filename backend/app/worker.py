@@ -21,7 +21,7 @@ from pymongo.errors import PyMongoError
 
 from .config import settings
 from .database import client, customer_records, dp_records, ensure_indexes, ping_database, town_zone_cache, validation_runs
-from .upload_storage import remove_upload, resolve_upload_path
+from .upload_storage import download_blob_upload, remove_upload, resolve_upload_path
 from .reference_data import ReferenceData, load_reference_data
 from .validation.batch_processor import process_csv_file
 from .validation.csv_import import iter_mapped_rows
@@ -162,7 +162,7 @@ def mark_stale_processing_runs(
                         "again to create a new run."
                     ),
                 },
-                "$unset": {"input_file_key": ""},
+                "$unset": {"input_file_key": "", "input_blob_url": ""},
             }
         result = run_collection.update_one(guard, update)
         if getattr(result, "matched_count", 0):
@@ -189,6 +189,7 @@ def process_next_queued_run(
 
     run_id = str(run.get("run_id", ""))
     file_key = run.get("input_file_key")
+    worker_temp_path: Path | None = None
     terminal_status = "FAILED"
     google_maps_client: GoogleMapsClient | None = None
     osm_town_client: NominatimTownZoneClient | None = None
@@ -196,7 +197,12 @@ def process_next_queued_run(
         mapping = run.get("column_mapping")
         if not isinstance(mapping, dict) or not mapping:
             raise ValueError("The validation run has no usable column mapping.")
-        csv_path = resolve_upload_path(str(file_key or ""))
+        blob_url = run.get("input_blob_url")
+        if blob_url:
+            worker_temp_path = download_blob_upload(str(blob_url), run_id)
+            csv_path = worker_temp_path
+        else:
+            csv_path = resolve_upload_path(str(file_key or ""))
         if not csv_path.is_file():
             raise FileNotFoundError("The stored CSV file is missing.")
         configured_max_rows = settings.max_csv_rows if max_rows is None else max_rows
@@ -347,6 +353,8 @@ def process_next_queued_run(
             # The next worker loop or stale-run check will surface the interrupted job.
             logger.error("Could not persist failure state for run %s", run_id or "unknown")
     finally:
+        if worker_temp_path is not None:
+            worker_temp_path.unlink(missing_ok=True)
         if google_maps_client is not None:
             try:
                 google_maps_client.close()
@@ -363,9 +371,9 @@ def process_next_queued_run(
                 remove_upload(file_key)
                 run_collection.update_one(
                     {"run_id": run_id},
-                    {"$unset": {"input_file_key": ""}},
+                    {"$unset": {"input_file_key": "", "input_blob_url": ""}},
                 )
-        except PyMongoError:
+        except (PyMongoError, OSError):
             logger.error("Could not finish upload cleanup for run %s", run_id or "unknown")
 
     return True

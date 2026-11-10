@@ -13,7 +13,7 @@ Scalable customer and distribution-point (DP/FDP) location data-quality applicat
 
 ## Deploy to Vercel Hobby + MongoDB Atlas
 
-Deploy `frontend/` and `backend/` as separate Vercel projects and use MongoDB Atlas. The API can run as a Python Function without Docker. The current CSV upload/worker flow still needs a Blob + durable Queue/Workflow migration before it works on Vercel Hobby: function request bodies are limited to 4.5 MB and the worker currently depends on a persistent process and filesystem. See [DEPLOYMENT.md](DEPLOYMENT.md) for the setup and limitations.
+Deploy the frontend and FastAPI API as separate Vercel projects, then create a third project from the repository root to run the Vercel Daemon in `vercel.json`. Deployed CSV uploads use private Vercel Blob; the daemon downloads each file to temporary disk and uses the existing MongoDB queue. See [DEPLOYMENT.md](DEPLOYMENT.md) for the setup. Vercel Hobby is personal/non-commercial only and has a small Daemon quota, so use synthetic data for a short demo, not company customer data or regular production processing.
 
 ## Safety and correctness rules
 
@@ -73,7 +73,7 @@ Open a second terminal and run this from the backend directory, using the same .
 python -m app.worker
 ~~~
 
-The worker claims queued runs atomically from MongoDB, preflights the complete CSV, loads the configured reference files, and processes rows in bounded batches. It records reference file hashes with each run. Run only one worker process for this MVP. The API and worker must share the same persistent UPLOAD_DIR; in containers, mount the same persistent volume at that location in both services.
+The worker claims queued runs atomically from MongoDB, preflights the complete CSV, loads the configured reference files, and processes rows in bounded batches. In local development it reads the API's local upload directory. On Vercel, it downloads the source from private Blob to temporary worker storage and removes it when processing finishes. MongoDB keeps the queue and results durable across daemon restarts.
 
 ### Upload and check a run
 
@@ -89,7 +89,7 @@ The response contains a run_id and poll_url. Check progress:
 curl.exe -H "X-API-Key: YOUR_SECRET" http://127.0.0.1:8000/api/validation-runs/YOUR_RUN_ID
 ~~~
 
-The upload endpoint accepts CSV files only. Default limits are 512 MiB and 1,000,000 source rows; override them via MAX_UPLOAD_BYTES and MAX_CSV_ROWS. The frontend calls the protected /api/validation-runs/preview endpoint to read the header and propose mappings for the required customer audit fields: customer ID, router/service number, customer coordinates, address, DP ID and coordinates, and line distance. The worker performs a full syntax/field-size/row-count preflight before writing validation records. The API and worker must share the same upload directory and MongoDB database.
+The upload flow accepts CSV files only. Default limits are 512 MiB and 1,000,000 source rows; override them via MAX_UPLOAD_BYTES and MAX_CSV_ROWS. The browser reads the first CSV record locally; the API validates its headers and proposes mappings for the required customer audit fields: customer ID, router/service number, customer coordinates, address, DP ID and coordinates, and line distance. In Vercel, the browser uploads directly to private Blob so file contents avoid the Function request-body limit. The worker performs a full syntax/field-size/row-count preflight before writing validation records.
 
 Customer-to-DP distance defaults to the local Haversine straight-line calculation, with a 500 m threshold. DP capacity validation defaults to 8 distinct customers per DP and can be configured with `DP_PORT_CAPACITY`; over-capacity DPs and their assigned customer rows receive `DP_PORT_CAPACITY_EXCEEDED`, and the DP results/export report assigned, available and maximum ports. Duplicate rows for the same normalized customer at the same DP count once. This is validation of the uploaded CSV, not a live-network port query. To use Google Maps road-route distance instead, set `DISTANCE_METHOD=google_routes` and configure a backend-only `GOOGLE_MAPS_SERVER_KEY` after enabling the Routes API in your Google Cloud project. To geocode customer addresses, set `GOOGLE_GEOCODING_ENABLED=true` and enable the Geocoding API for that key. Both integrations have a per-run request cap and return `UNVERIFIED` rather than a guessed result when the provider does not return a usable response. Google road-route distance is not actual overhead cable length. See `docs/CUSTOMER_DP_AUDIT.md` and `docs/VALIDATION_RULES.md` for details.
 
@@ -134,7 +134,7 @@ The same test command runs automatically in GitHub Actions for pushes to main an
 
 ## Queue and failure behavior
 
-The queue is persisted in validation_runs, so queued work survives API and worker process restarts as long as MongoDB and the shared upload volume persist. The worker preflights CSV syntax and row/field limits before processing. A run that stops reporting progress for WORKER_STALE_AFTER_SECONDS (default 900 seconds) is requeued for one clean replay when attempts remain: the worker re-runs preflight, deletes that run's partial customer/DP outputs, resets counters, and starts again from the source file. After WORKER_MAX_ATTEMPTS is reached, the run is marked failed, partial records remain attached to the failed run for diagnosis, and the stored upload is removed. This restart behavior assumes one worker process for the MVP; multi-worker leases and production-grade coordination are not implemented.
+The queue is persisted in validation_runs, so queued work survives API and worker restarts as long as MongoDB and the source file in local storage or Blob remain available. The worker preflights CSV syntax and row/field limits before processing. A run that stops reporting progress for WORKER_STALE_AFTER_SECONDS (default 900 seconds) is requeued for one clean replay when attempts remain: the worker re-runs preflight, deletes that run's partial customer/DP outputs, resets counters, and starts again from the source file. After WORKER_MAX_ATTEMPTS is reached, the run is marked failed, partial records remain attached to the failed run for diagnosis, and the stored upload is removed.
 
 ## Generate synthetic test data
 

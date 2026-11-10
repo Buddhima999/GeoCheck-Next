@@ -1,0 +1,13 @@
+{
+  "$schema": "https://openapi.vercel.sh/vercel.json",
+  "daemons": {
+    "geocheck-worker": {
+      "root": "backend/",
+      "entrypoint": "Dockerfile",
+      "command": ["python", "-m", "app.worker"],
+      "instances": {
+        "sin1": 1
+      }
+    }
+  }
+}

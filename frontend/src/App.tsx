@@ -1,4 +1,5 @@
 import { type FormEvent, useCallback, useEffect, useMemo, useState } from "react";
+import { upload as uploadToBlob } from "@vercel/blob/client";
 import {
   Activity, AlertTriangle, ArrowDownToLine, ArrowLeftRight, Building2, Check,
   CheckCircle2, ChevronDown, ChevronLeft, ChevronRight, CircleHelp, Clock3,
@@ -127,9 +128,7 @@ const PAGE_SIZE = 50;
 // production API directly for the deployed static frontend; local Vite still
 // uses VITE_API_BASE_URL (or its /api proxy) as configured by developers.
 const API_BASE_URL = (
-  import.meta.env.PROD
-    ? "https://geo-check-next.vercel.app"
-    : import.meta.env.VITE_API_BASE_URL || ""
+  import.meta.env.VITE_API_BASE_URL || (import.meta.env.PROD ? "https://geo-check-next.vercel.app" : "")
 ).trim().replace(/\/$/, "");
 const GOOGLE_MAPS_KEY = (import.meta.env.VITE_GOOGLE_MAPS_API_KEY || "").trim();
 const OSM_TILES = import.meta.env.VITE_MAP_TILE_URL || "https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png";
@@ -178,6 +177,41 @@ function statusTone(value?: string) {
   return "neutral";
 }
 function runTitle(item: ValidationRun) { return item.original_filename || item.run_id; }
+
+async function readCsvHeader(file: File): Promise<string[]> {
+  const maxHeaderBytes = 512 * 1024;
+  const bytes = await file.slice(0, maxHeaderBytes + 1).arrayBuffer();
+  const text = new TextDecoder("utf-8", { fatal: true }).decode(bytes).replace(/^\uFEFF/, "");
+  let quoted = false;
+  let end = -1;
+  for (let index = 0; index < text.length; index += 1) {
+    if (text[index] === '"') {
+      if (quoted && text[index + 1] === '"') index += 1;
+      else quoted = !quoted;
+    } else if (!quoted && (text[index] === "\n" || text[index] === "\r")) {
+      end = index;
+      break;
+    }
+  }
+  if (end < 0 && file.size > maxHeaderBytes) throw new Error("CSV header exceeds the 512 KiB preview limit.");
+  const record = text.slice(0, end < 0 ? text.length : end);
+  const headers: string[] = [];
+  let field = "";
+  quoted = false;
+  for (let index = 0; index < record.length; index += 1) {
+    const character = record[index];
+    if (character === '"') {
+      if (quoted && record[index + 1] === '"') { field += '"'; index += 1; }
+      else quoted = !quoted;
+    } else if (character === "," && !quoted) {
+      headers.push(field);
+      field = "";
+    } else field += character;
+  }
+  if (quoted) throw new Error("CSV header has an unclosed quote.");
+  headers.push(field);
+  return headers;
+}
 
 function Badge({ value }: { value?: string }) {
   return <span className={`badge badge-${statusTone(value)}`}><span className="badge-dot" />{statusName(value)}</span>;
@@ -405,10 +439,13 @@ export default function App() {
     if (!selectedFile || !apiKey.trim()) return;
     setPreviewing(true);
     setError("");
-    const form = new FormData();
-    form.append("file", selectedFile);
     try {
-      const result = await json<CsvPreview>(await apiFetch("/api/validation-runs/preview", { method: "POST", body: form }));
+      const headers = await readCsvHeader(selectedFile);
+      const result = await json<CsvPreview>(await apiFetch("/api/validation-runs/preview-headers", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ headers, file_name: selectedFile.name }),
+      }));
       setPreview(result);
       setMapping(result.detected_mapping);
     } catch (cause) {
@@ -433,11 +470,43 @@ export default function App() {
     const missing = preview.required_fields.filter((field) => !mapping[field]);
     if (missing.length) { setError(`Map the required columns: ${missing.join(", ")}.`); return; }
     setUploading(true);
-    const form = new FormData();
-    form.append("file", file);
-    form.append("column_mapping", JSON.stringify(mapping));
     try {
-      const created = await json<ValidationRun>(await apiFetch("/api/validation-runs", { method: "POST", body: form }));
+      let created: ValidationRun;
+      if (import.meta.env.PROD) {
+        const runId = crypto.randomUUID().replaceAll("-", "");
+        const blob = await uploadToBlob(`geocheck/${runId}.csv`, file, {
+          access: "private",
+          handleUploadUrl: `${window.location.origin}/api/geocheck-upload`,
+          clientPayload: JSON.stringify({ apiKey: apiKey.trim() }),
+          multipart: true,
+        });
+        try {
+          created = await json<ValidationRun>(await apiFetch("/api/validation-runs/blob", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              pathname: blob.pathname,
+              download_url: blob.downloadUrl,
+              file_size_bytes: file.size,
+              file_name: file.name,
+              headers: preview.headers,
+              column_mapping: mapping,
+            }),
+          }));
+        } catch (cause) {
+          await fetch(`${window.location.origin}/api/geocheck-upload`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json", "X-API-Key": apiKey.trim() },
+            body: JSON.stringify({ action: "delete", pathname: blob.pathname }),
+          }).catch(() => undefined);
+          throw cause;
+        }
+      } else {
+        const form = new FormData();
+        form.append("file", file);
+        form.append("column_mapping", JSON.stringify(mapping));
+        created = await json<ValidationRun>(await apiFetch("/api/validation-runs", { method: "POST", body: form }));
+      }
       setRuns((previous) => [created, ...previous.filter((item) => item.run_id !== created.run_id)]);
       setRunTotal((value) => value + 1);
       setRun(created);

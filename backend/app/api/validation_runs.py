@@ -5,12 +5,14 @@ import csv
 import io
 import json
 import os
+import re
 import secrets
 import uuid
 from datetime import datetime, timezone
 from typing import Any
+from urllib.parse import urlparse
 
-from fastapi import APIRouter, Depends, File, Form, Header, HTTPException, UploadFile, status
+from fastapi import APIRouter, Body, Depends, File, Form, Header, HTTPException, UploadFile, status
 from pymongo.errors import PyMongoError
 
 from ..config import settings
@@ -20,6 +22,7 @@ from ..validation.csv_import import FIELD_ALIASES, REQUIRED_AUDIT_FIELDS, REQUIR
 
 router = APIRouter(prefix="/api/validation-runs", tags=["validation-runs"])
 _CHUNK_BYTES = 1024 * 1024
+_BLOB_PATH_PATTERN = re.compile(r"^geocheck/[0-9a-f]{32}\.csv$")
 
 
 def utc_now() -> datetime:
@@ -76,6 +79,104 @@ def _display_filename(filename: str | None) -> str:
     leaf = (filename or "upload.csv").replace("\\", "/").rsplit("/", 1)[-1]
     cleaned = "".join(char for char in leaf if ord(char) >= 32 and ord(char) != 127).strip()
     return (cleaned or "upload.csv")[:255]
+
+
+def _preview_headers(headers: list[str], filename: str | None) -> dict[str, Any]:
+    if not headers or not any(header.strip() for header in headers):
+        raise ValueError("CSV has no header row.")
+    if len(headers) > 64:
+        raise ValueError(f"CSV has {len(headers)} columns; maximum is 64.")
+    if any(not header.strip() for header in headers):
+        raise ValueError("CSV contains an empty column header.")
+    if len({normalize_header(header) for header in headers}) != len(headers):
+        raise ValueError("CSV contains duplicate column headers after normalization.")
+    detected = detect_mapping(headers)
+    required_fields = list(REQUIRED_AUDIT_FIELDS)
+    if "router_number" not in detected and "phone_number" in detected:
+        required_fields = ["phone_number" if field == "router_number" else field for field in required_fields]
+    return {
+        "headers": headers,
+        "detected_mapping": detected,
+        "supported_fields": list(FIELD_ALIASES),
+        "required_fields": required_fields,
+        "file_name": _display_filename(filename),
+    }
+
+
+@router.post("/preview-headers", dependencies=[Depends(require_api_key)])
+def preview_csv_headers(payload: dict[str, Any] = Body(...)) -> dict[str, Any]:
+    """Validate small header metadata parsed locally, avoiding a large server upload."""
+    headers = payload.get("headers")
+    filename = payload.get("file_name")
+    if not isinstance(headers, list) or any(not isinstance(item, str) for item in headers):
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="headers must be a list of text values.")
+    if filename is not None and not isinstance(filename, str):
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="file_name must be text.")
+    try:
+        return _preview_headers(headers, filename)
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
+
+
+@router.post("/blob", status_code=status.HTTP_202_ACCEPTED, dependencies=[Depends(require_api_key)])
+def create_blob_validation_run(payload: dict[str, Any] = Body(...)) -> dict[str, Any]:
+    """Queue a CSV already uploaded directly to a private Vercel Blob store."""
+    if os.getenv("VERCEL") != "1" or os.getenv("VERCEL_ENV") == "development":
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Blob uploads are only enabled on the deployed Vercel API.")
+    pathname = payload.get("pathname")
+    blob_url = payload.get("download_url")
+    file_size = payload.get("file_size_bytes")
+    filename = payload.get("file_name")
+    headers = payload.get("headers")
+    raw_mapping = payload.get("column_mapping")
+    if not isinstance(pathname, str) or not _BLOB_PATH_PATTERN.fullmatch(pathname):
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="The uploaded CSV path is invalid.")
+    if not isinstance(filename, str) or not filename.lower().endswith(".csv"):
+        raise HTTPException(status_code=status.HTTP_415_UNSUPPORTED_MEDIA_TYPE, detail="Upload a .csv file.")
+    parsed_url = urlparse(blob_url if isinstance(blob_url, str) else "")
+    if (
+        parsed_url.scheme != "https"
+        or not re.fullmatch(r"[a-z0-9-]+\.private\.blob\.vercel-storage\.com", parsed_url.hostname or "")
+        or parsed_url.path.lstrip("/") != pathname
+    ):
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="The CSV must be stored in a private Vercel Blob store.")
+    if not isinstance(file_size, int) or isinstance(file_size, bool) or file_size < 1 or file_size > settings.max_upload_bytes:
+        raise HTTPException(status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE, detail=f"CSV exceeds the {settings.max_upload_bytes}-byte upload limit.")
+    try:
+        preview = _preview_headers(headers, filename)
+        if not isinstance(raw_mapping, dict):
+            raise ValueError("column_mapping must map logical fields to CSV headers.")
+        mapping = _parse_mapping(json.dumps(raw_mapping), headers)
+    except (ValueError, TypeError) as exc:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
+    run_id = pathname.removeprefix("geocheck/").removesuffix(".csv")
+    now = utc_now()
+    run_document = {
+        "run_id": run_id,
+        "status": "QUEUED",
+        "stage": "QUEUED",
+        "original_filename": _display_filename(filename),
+        "input_file_key": pathname,
+        "input_blob_url": blob_url,
+        "file_size_bytes": file_size,
+        "source_headers": preview["headers"],
+        "column_mapping": mapping,
+        "created_at": now,
+        "rows_processed": 0,
+        "source_rows_seen": 0,
+        "blank_rows_skipped": 0,
+        "batches_processed": 0,
+        "rows_with_findings": 0,
+        "rows_with_hard_errors": 0,
+        "issue_counts": {},
+        "attempt_count": 0,
+        "last_error": None,
+    }
+    try:
+        validation_runs.insert_one(run_document)
+    except PyMongoError as exc:
+        raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail="Could not save the validation run. Check database connectivity.") from exc
+    return {**_public_run(run_document), "poll_url": f"/api/validation-runs/{run_id}"}
 
 
 def _public_run(run: dict[str, Any]) -> dict[str, Any]:
@@ -198,9 +299,8 @@ async def upload_validation_csv(
         raise HTTPException(
             status_code=status.HTTP_501_NOT_IMPLEMENTED,
             detail=(
-                "CSV analysis is not enabled in this Vercel deployment yet. "
-                "It requires durable Blob storage and a Vercel Queue/Workflow consumer; "
-                "the current background worker uses a persistent process and shared disk."
+                "On Vercel, CSV files must be uploaded to private Blob storage and queued with the /blob endpoint. "
+                "This multipart upload route is reserved for local and persistent-host deployments."
             ),
         )
 
