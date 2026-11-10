@@ -5,5 +5,15 @@
       "maxDuration": 300,
       "includeFiles": "reference-data/**"
     }
+  },
+  "daemons": {
+    "geocheck-worker": {
+      "root": "./",
+      "entrypoint": "Dockerfile",
+      "command": ["python", "-m", "app.worker"],
+      "instances": {
+        "sin1": 1
+      }
+    }
   }
 }

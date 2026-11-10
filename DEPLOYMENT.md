@@ -1,13 +1,13 @@
 # Deployment: Vercel + MongoDB Atlas
 
-GeoCheck uses three Vercel projects and one private Blob store:
+GeoCheck uses two Vercel projects and one private Blob store:
 
 1. Frontend (`frontend/`): Vite app and the secure Blob upload-token function.
 2. Backend (`backend/`): FastAPI API and MongoDB access.
-3. Worker (`.`): Vercel Daemon, configured by the root `vercel.json` and built from `backend/Dockerfile`.
+3. CSV worker: a Vercel Daemon configured in the backend project's `backend/vercel.json`, built from `backend/Dockerfile` and deployed alongside the backend API.
 4. MongoDB Atlas stores queued runs and processed results; private Vercel Blob temporarily stores source CSVs.
 
-The worker and Blob flow are intended for short initial demonstrations with synthetic data. **Vercel Hobby is limited to personal, non-commercial use and is not suitable for company customer records.** Hobby Daemons also have only 5 Active CPU-hours and 420 GB-hours of provisioned memory per month; the smallest 1 GiB daemon can run for about 17.5 days before exhausting its memory quota. When either quota is reached, Vercel stops the team's daemons until the next month or a plan upgrade. See [Daemons limits](https://vercel.com/docs/daemons/limits) and the [Hobby plan](https://vercel.com/docs/plans/hobby).
+The worker and Blob flow are intended for short initial demonstrations with synthetic data. **Vercel Hobby is limited to personal, non-commercial use and is not suitable for company customer records.** The Hobby account currently shows 4 Fluid CPU-hours and 360 GB-hours of provisioned memory per month. Monitor the Vercel Usage page because the daemon shares the account's Fluid quotas. See [Vercel Daemons](https://vercel.com/docs/daemons) and the [Hobby plan](https://vercel.com/docs/plans/hobby).
 
 ## 1. Prepare MongoDB Atlas
 
@@ -50,19 +50,15 @@ Create a **private** Vercel Blob store and connect its `BLOB_READ_WRITE_TOKEN` t
 
 Set `API_CORS_ORIGINS` in the backend to the exact frontend origin and redeploy the backend.
 
-## 4. Deploy the CSV worker as a separate Vercel Daemon
+## 4. Run the CSV worker as a Vercel Daemon
 
-Create a third Vercel project from the same GitHub repository:
+The daemon is part of the existing backend Vercel project, not a third project. `backend/vercel.json` declares one `geocheck-worker` instance using `backend/Dockerfile` and runs `python -m app.worker`. Keep the backend project's Root Directory set to `backend/` and deploy the updated `main` branch to Production. Daemons are production-only during beta. Check that project's Daemon logs and confirm the worker reports that it started.
 
-1. Set **Root Directory** to the repository root (`.`), not `backend/`.
-2. Use the Vercel Daemons configuration in the root `vercel.json`. Set the framework to **Other** if Vercel asks for one.
-3. Add Production environment variables `MONGO_URI`, `MONGO_DB_NAME`, and the same `BLOB_READ_WRITE_TOKEN` used by the private Blob store. Copy optional validation settings such as `GOOGLE_MAPS_SERVER_KEY` only if the worker needs them.
-4. Set `UPLOAD_DIR=/data/uploads` so the worker writes temporary downloads to the writable directory in its container.
-5. Deploy to Production. Daemons are production-only during beta. Check the project's Daemon logs and confirm it reports that the worker started.
+The backend project's existing `MONGO_URI` and `MONGO_DB_NAME` variables are shared with the daemon. Add the same `BLOB_READ_WRITE_TOKEN` from the private Blob store and set `UPLOAD_DIR=/data/uploads` in the backend project so the worker can download source files into its writable container directory. The frontend and backend must both be connected to the same private Blob store. Copy optional validation settings such as `GOOGLE_MAPS_SERVER_KEY` only if the worker needs them.
 
 The worker polls MongoDB for queued runs, downloads each source CSV from private Blob to temporary local storage, processes it in batches, writes results to MongoDB, then deletes the source Blob. Its local disk is temporary; MongoDB and Blob are the durable stores.
 
-The root `vercel.json` has one daemon instance in `sin1` (Singapore), close to Sri Lanka and common Atlas Asia regions. Hobby daemon instances require at least 1 GiB and are always provisioned while enabled. Monitor usage; once the monthly quota is exhausted, processing stops. Change the configured region only to a Daemon-supported region.
+The daemon instance is configured in `sin1` (Singapore), close to Sri Lanka and common Atlas Asia regions. Hobby daemon instances consume the account's monthly CPU and provisioned-memory quotas; monitor usage because processing stops when a quota is exhausted. Change the configured region only to a Daemon-supported region.
 
 ## Upload and worker behavior
 
